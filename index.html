@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pollo Air Piano</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Pollo <span>air piano</span></h1>
+    <div id="status">Press Start to enable the camera.</div>
+    <div id="fps"></div>
+  </header>
+
+  <main>
+    <div class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="overlay">
+        <div class="card">
+          <h2>Play piano with your hands</h2>
+          <p id="overlay-msg">Allow camera access. Your video stays on your device: hand tracking runs locally in the browser.</p>
+          <button id="start">Start</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="controls">
+      <p id="hint"></p>
+      <label>Mode
+        <select id="mode">
+          <option value="tap" selected>Tap (finger strike)</option>
+          <option value="zone">Zone (touch the keys)</option>
+        </select>
+      </label>
+      <label>Start octave
+        <select id="octave">
+          <option value="36">C2</option>
+          <option value="48">C3</option>
+          <option value="60" selected>C4 (middle C)</option>
+          <option value="72">C5</option>
+        </select>
+      </label>
+      <label>Keys
+        <select id="keys">
+          <option value="7">1 octave</option>
+          <option value="14" selected>2 octaves</option>
+          <option value="21">3 octaves</option>
+        </select>
+      </label>
+      <label>Tap sensitivity <input id="sensitivity" type="range" min="1" max="10" step="1" value="6" /></label>
+      <label class="check"><input id="thumb" type="checkbox" /> Use thumbs in tap mode</label>
+      <label>Volume <input id="volume" type="range" min="0" max="1" step="0.01" value="0.7" /></label>
+      <label>Reverb <input id="reverb" type="range" min="0" max="0.6" step="0.01" value="0.22" /></label>
+      <label class="check"><input id="sustain" type="checkbox" /> Sustain pedal <kbd>Space</kbd></label>
+      <label class="check"><input id="skeleton" type="checkbox" checked /> Show hand skeleton</label>
+      <p class="small">No camera? Play with the keyboard: <kbd>A</kbd><kbd>W</kbd><kbd>S</kbd><kbd>E</kbd><kbd>D</kbd><kbd>F</kbd><kbd>T</kbd><kbd>G</kbd>… after pressing Start.</p>
+    </aside>
+  </main>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
