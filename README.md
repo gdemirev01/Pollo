@@ -13,6 +13,10 @@ python3 -m http.server 8000      # or: npm start
 
 Press **Start**, allow the camera, and hold your hands up so they're over the on-screen keyboard.
 
+### Online (GitHub Pages)
+
+`.github/workflows/pages.yml` runs the tests and publishes the app on every push to `main`. One-time setup: **Settings → Pages → Build and deployment → Source: GitHub Actions**. The app is then live at `https://<your-user>.github.io/<repo>/`. Pages serves over https, which browsers require for camera access.
+
 ## How to play
 
 | Mode | Gesture |
