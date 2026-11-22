@@ -722,7 +722,8 @@ function autoResize(now) {
   lastResize = now;
   if (sizeDirty && (!hands.length || now - lastSizeSave > 2000)) { save(); sizeDirty = false; lastSizeSave = now; }
   // When pinned to a textured table, the table tracker already handles the phone's distance.
-  if (!settings.autoSize || !hands.length || (settings.anchor && follow.ok)) return;
+  // Also while pinned: the tracker follows changes after placing, but can't fix a wrong starting size.
+  if (!settings.autoSize || !hands.length) return;
   const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
   const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
   const base = effQuad();

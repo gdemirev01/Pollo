@@ -141,3 +141,20 @@ test('the whole hand shifting (all fingers rise and settle together) plays nothi
     assert.equal(ev.length, 0, `${mode}: ${ev.map((e) => e.finger).join(' ')}`);
   }
 });
+
+const tapDownFrames = (f, cx = 0.35) => [...[0.15, 0.3, 0.3].map((a) => [frontHand('R', { lift: lifted(f, a), cx })]), [frontHand('R', { cx })]];
+
+test('a held note lets go when its finger slides off the key', () => {
+  const det = createDetector({ mode: 'tap' });
+  const L = buildLayout({ startMidi: 60, whiteCount: 7, x: 0, y: 0.6, width: 0.7, height: 0.35 }); // white keys 0.1 wide
+  const ev = run(det, [...rest(10), ...tapDownFrames(2), ...[0.36, 0.38, 0.42, 0.46, 0.5].map((cx) => [frontHand('R', { cx })])], L);
+  assert.deepEqual(ev.map((e) => e.type), ['on', 'off']);
+});
+
+test('a held note lets go after a while even if the finger never lifts (it got lost among the others)', () => {
+  const det = createDetector({ mode: 'tap' });
+  const ev = run(det, [...rest(10), ...tapDownFrames(2), ...rest(60)]); // 2 s resting on the key
+  assert.deepEqual(ev.map((e) => e.type), ['on', 'off']);
+  const offAt = ev.findIndex((e) => e.type === 'off');
+  assert.ok(offAt === 1);
+});
