@@ -2,62 +2,145 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1117" />
   <title>Pollo Air Piano</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <header>
-    <h1>Pollo <span>air piano</span></h1>
-    <div id="status">Press Start to enable the camera.</div>
-    <div id="fps"></div>
-  </header>
+<body class="panel-open">
+  <div class="app">
+    <header class="bar">
+      <h1>Pollo <span>air piano</span></h1>
+      <div id="status" role="status">Press Start to turn on the camera.</div>
+      <div id="fps"></div>
+    </header>
 
-  <main>
-    <div class="stage">
-      <video id="video" playsinline muted></video>
-      <canvas id="canvas"></canvas>
-      <div id="overlay">
-        <div class="card">
-          <h2>Play piano with your hands</h2>
-          <p id="overlay-msg">Allow camera access. Your video stays on your device: hand tracking runs locally in the browser.</p>
-          <button id="start">Start</button>
+    <div class="body">
+      <section class="stage-wrap" id="stageWrap">
+        <div class="stage" id="stage">
+          <video id="video" playsinline muted></video>
+          <canvas id="canvas" aria-label="Camera view with piano keyboard"></canvas>
+
+          <div class="toolbar">
+            <button class="tool" id="editBtn" aria-pressed="false" title="Move and resize the keyboard">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>
+              <span>Move keys</span>
+            </button>
+            <button class="tool" id="switchCam" title="Switch between front and back camera">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-3h6l2 3h3v12H4z"/><path d="M9 13a3 3 0 0 1 5-2.2M15 13a3 3 0 0 1-5 2.2M14 9v2h-2M10 17v-2h2"/></svg>
+              <span>Camera</span>
+            </button>
+            <button class="tool" id="fullBtn" title="Full screen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+              <span>Full screen</span>
+            </button>
+            <button class="tool" id="panelBtn" aria-expanded="true" aria-controls="panel" title="Settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+              <span>Settings</span>
+            </button>
+          </div>
+
+          <div class="edit-banner" id="editBanner" hidden>
+            <p>Drag to move. Drag an edge or corner to resize.</p>
+            <div class="row">
+              <button class="ghost" id="resetKb">Reset</button>
+              <button id="doneEdit">Done</button>
+            </div>
+          </div>
+
+          <div id="overlay">
+            <div class="card">
+              <h2>Play piano with your hands</h2>
+              <ol class="steps">
+                <li>Prop your phone, tablet or laptop on the table with the front camera facing you.</li>
+                <li>Hold your hands over the table so the camera sees your fingers.</li>
+                <li>Tap <b>Move keys</b> to drag and resize the keyboard to where your hands are.</li>
+              </ol>
+              <p class="muted" id="overlay-msg">Video stays on your device. Hand tracking runs in the browser.</p>
+              <button id="start">Start</button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <aside class="controls">
-      <p id="hint"></p>
-      <label>Mode
-        <select id="mode">
-          <option value="tap" selected>Tap (finger strike)</option>
-          <option value="zone">Zone (touch the keys)</option>
-        </select>
-      </label>
-      <label>Start octave
-        <select id="octave">
-          <option value="36">C2</option>
-          <option value="48">C3</option>
-          <option value="60" selected>C4 (middle C)</option>
-          <option value="72">C5</option>
-        </select>
-      </label>
-      <label>Keys
-        <select id="keys">
-          <option value="7">1 octave</option>
-          <option value="14" selected>2 octaves</option>
-          <option value="21">3 octaves</option>
-        </select>
-      </label>
-      <label>Tap sensitivity <input id="sensitivity" type="range" min="1" max="10" step="1" value="6" /></label>
-      <label class="check"><input id="thumb" type="checkbox" /> Use thumbs in tap mode</label>
-      <label>Volume <input id="volume" type="range" min="0" max="1" step="0.01" value="0.7" /></label>
-      <label>Reverb <input id="reverb" type="range" min="0" max="0.6" step="0.01" value="0.22" /></label>
-      <label class="check"><input id="sustain" type="checkbox" /> Sustain pedal <kbd>Space</kbd></label>
-      <label class="check"><input id="skeleton" type="checkbox" checked /> Show hand skeleton</label>
-      <p class="small">No camera? Play with the keyboard: <kbd>A</kbd><kbd>W</kbd><kbd>S</kbd><kbd>E</kbd><kbd>D</kbd><kbd>F</kbd><kbd>T</kbd><kbd>G</kbd>… after pressing Start.</p>
-    </aside>
-  </main>
+      <aside class="panel" id="panel">
+        <div class="panel-head">
+          <h2>Settings</h2>
+          <button class="ghost close" id="panelClose" aria-label="Close settings">Close</button>
+        </div>
+
+        <p id="hint" class="hint"></p>
+
+        <fieldset>
+          <legend>Playing</legend>
+          <label for="mode">How to play
+            <select id="mode" data-setting="mode">
+              <option value="tap">Tap: push one finger down</option>
+              <option value="zone">Touch: fingertip enters a key</option>
+            </select>
+          </label>
+          <label for="sensitivity"><span>Tap sensitivity<output data-for="sensitivity"></output></span>
+            <input id="sensitivity" data-setting="sensitivity" type="range" min="1" max="10" step="1" />
+          </label>
+          <label class="check" for="useThumb"><input id="useThumb" data-setting="useThumb" type="checkbox" /> Use thumbs in tap mode</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Keyboard</legend>
+          <label for="startMidi">Lowest note
+            <select id="startMidi" data-setting="startMidi"></select>
+          </label>
+          <label for="whiteCount"><span>White keys<output data-for="whiteCount"></output></span>
+            <input id="whiteCount" data-setting="whiteCount" type="range" min="5" max="36" step="1" />
+          </label>
+          <label for="labels">Note names
+            <select id="labels" data-setting="labels">
+              <option value="none">Hidden</option>
+              <option value="c">C notes only</option>
+              <option value="all">Every key</option>
+            </select>
+          </label>
+          <label for="opacity"><span>Key opacity<output data-for="opacity"></output></span>
+            <input id="opacity" data-setting="opacity" type="range" min="0.15" max="1" step="0.05" />
+          </label>
+          <label for="accent" class="check">
+            <input id="accent" data-setting="accent" type="color" /> Pressed key colour
+          </label>
+          <div class="row">
+            <button class="ghost" id="editBtn2">Move / resize keys</button>
+            <button class="ghost" id="resetKb2">Reset position</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Camera</legend>
+          <label for="camera">Camera
+            <select id="camera" data-setting="camera">
+              <option value="facing:user">Front camera</option>
+              <option value="facing:environment">Back camera</option>
+            </select>
+          </label>
+          <label class="check" for="mirror"><input id="mirror" data-setting="mirror" type="checkbox" /> Mirror image</label>
+          <label class="check" for="flip"><input id="flip" data-setting="flip" type="checkbox" /> Upside down (camera mounted flipped)</label>
+          <label class="check" for="skeleton"><input id="skeleton" data-setting="skeleton" type="checkbox" /> Show hand outline</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sound</legend>
+          <label for="volume"><span>Volume<output data-for="volume"></output></span>
+            <input id="volume" data-setting="volume" type="range" min="0" max="1" step="0.01" />
+          </label>
+          <label for="reverb"><span>Reverb<output data-for="reverb"></output></span>
+            <input id="reverb" data-setting="reverb" type="range" min="0" max="0.6" step="0.01" />
+          </label>
+          <label class="check" for="sustain"><input id="sustain" type="checkbox" /> Sustain pedal <kbd>Space</kbd></label>
+        </fieldset>
+
+        <p class="small">You can also tap the keys on screen, or play with the keyboard: <kbd>A</kbd><kbd>W</kbd><kbd>S</kbd><kbd>E</kbd><kbd>D</kbd><kbd>F</kbd>… Settings are saved in this browser.</p>
+        <button class="ghost" id="resetAll">Reset all settings</button>
+      </aside>
+    </div>
+  </div>
 
   <script type="module" src="src/main.js"></script>
 </body>
