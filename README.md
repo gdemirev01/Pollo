@@ -30,6 +30,12 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 
 Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Tap the table (camera above)** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated.
 
+### 3D keys on the table
+
+The keyboard is drawn as a real 3D piano standing on the table: key blocks at real proportions (white keys 2.35 cm wide and 15 cm long), raised black keys, a case and a soft shadow, seen in the table's perspective. Pressed keys sink and light up. Your hands are cut out of the camera picture and drawn in front of the keys, so your fingers sit on them.
+
+How it works: the keyboard's four corners give the table's perspective; together with the camera's angle of view that tells the app where the camera is relative to the table, and so which way is "up" at every point. For the best effect, angle the keyboard's corners onto the table (Move keys, or Snap to hands with the camera above). Settings: **3D keys**, **Key height**, **Camera angle of view** (if the keys seem to lean or stretch, adjust this until they stand straight; most phone cameras are 60–75°), **Show my hands in front of the keys**.
+
 ### Calibrating taps
 
 Every camera angle shows a tap differently: from the front the fingertip moves up and down in the picture, from straight above it mostly gets closer to the camera, and from an angle above it may slide sideways. Press **Calibrate taps**, rest your hands on the table, and tap each finger a few times for about 8 seconds. The app learns which way your taps move in the picture from this camera angle and how big they are for each finger, and sets the thresholds from your own taps. It tells you how many taps it saw per finger; if one shows 0, calibrate again and include that finger. If it only saw jitter (no clear taps) it says so and keeps the previous setting. Calibration is saved separately for the front and overhead modes; **Clear calibration** goes back to the defaults.
@@ -85,6 +91,7 @@ webcam ─► MediaPipe HandLandmarker (WASM + GPU) ─► landmarks (mirrored t
 - `src/layout-editor.js` — moving, angling and resizing the keyboard's corners.
 - `src/snap.js` — waits for still hands and fits the keyboard under the fingertips.
 - `src/surface-tracker.js` — keeps the keyboard on the table when the phone moves: corner points, warped-patch matching, robust perspective fit, re-seeding.
+- `src/ar.js` — camera pose from the keyboard's corners and the angle of view; 3D key boxes and which faces are visible.
 - `src/calibrate.js` — tap calibration: learns the tap direction (principal component of knuckle-relative fingertip features) and per-finger tap size.
 - `src/filters.js` — One Euro filter that smooths hand landmarks without lagging fast taps.
 - `src/settings.js` — defaults and saving to `localStorage`.

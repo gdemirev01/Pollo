@@ -9,6 +9,7 @@ import { createSteadiness, snapQuad } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
+import { poseFromQuad, keyBoxes, keyboardSize, boxFaces, WHITE_HEIGHT_CM, BLACK_EXTRA_CM } from './ar.js';
 import { apply as applyH } from './homography.js';
 
 const $ = (s) => document.querySelector(s);
@@ -16,7 +17,7 @@ const video = $('#video');
 const canvas = $('#canvas');
 const stage = $('#stage');
 const stageWrap = $('#stageWrap');
-const g = canvas.getContext('2d');
+let g = canvas.getContext('2d'); // reassigned briefly while drawing the 3D piano layer
 
 const settings = loadSettings();
 let layout = makeLayout();
@@ -80,6 +81,8 @@ const fmt = {
   opacity: (v) => `${Math.round(v * 100)}%`,
   volume: (v) => `${Math.round(v * 100)}%`,
   reverb: (v) => `${Math.round((v / 0.6) * 100)}%`,
+  keyHeight: (v) => `${v.toFixed(1)}×`,
+  fov: (v) => `${v}°`,
 };
 
 function readControl(el) {
@@ -636,7 +639,7 @@ function draw(now) {
     const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1);
     const sy = settings.flip ? -1 : 1;
     g.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
-    g.globalAlpha = 0.85;
+    g.globalAlpha = settings.look3d ? 1 : 0.85;
     g.drawImage(video, 0, 0, W, H);
     g.globalAlpha = 1;
     g.setTransform(1, 0, 0, 1, 0, 0);
@@ -677,8 +680,11 @@ function draw(now) {
       g.fillText(k.black ? k.name.replace(/\d/, '') : k.name, lx, ly);
     }
   };
-  layout.keys.filter((k) => !k.black).forEach(drawKey);
-  layout.keys.filter((k) => k.black).forEach(drawKey);
+  if (!(settings.look3d && drawKeys3D(now, W, H, dpr, pressed))) {
+    layout.keys.filter((k) => !k.black).forEach(drawKey);
+    layout.keys.filter((k) => k.black).forEach(drawKey);
+  }
+  if (settings.occlusion && settings.look3d && hands.length && video.readyState >= 2) drawHandsOver(W, H);
 
   if (editing) drawEditFrame(W, H, dpr);
   else if (settings.anchor && tracker && !snapping && !settings.tracking) drawFollowBadge(W, H, dpr);
@@ -714,6 +720,123 @@ function draw(now) {
   if (settings.tracking && tracker && !editing) drawTracking(now, W, H, dpr);
 
   $('#fps').textContent = tracker ? `${hands.length} hand${hands.length === 1 ? '' : 's'} · ${fps.toFixed(0)} fps` : '';
+}
+
+// ---------- 3D keys on the table ----------
+const KEY_COLORS = {
+  white: { top: '#f3f0e8', front: '#c6c0b3', left: '#d9d4ca', right: '#d9d4ca', back: '#b8b2a6' },
+  black: { top: '#30303a', front: '#121216', left: '#1b1b21', right: '#1b1b21', back: '#101014' },
+  case: { top: '#2a2a33', front: '#1a1a20', left: '#16161b', right: '#16161b', back: '#121217' },
+};
+function shade(hex, k) { // k < 0 darker, > 0 lighter
+  const n = parseInt(hex.slice(1), 16);
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function polyPath(pts) { g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath(); }
+
+// The piano is drawn solid on its own layer, then laid over the video with the
+// chosen opacity, so keys never show through each other.
+const pianoLayer = document.createElement('canvas');
+function drawKeys3D(now, W, H, dpr, pressed) {
+  const size = keyboardSize(settings.whiteCount);
+  const pose = poseFromQuad(effQuad().map(([x, y]) => [x * W, y * H]), W, H, settings.fov, size);
+  if (!pose) return false;
+  if (pianoLayer.width !== W || pianoLayer.height !== H) { pianoLayer.width = W; pianoLayer.height = H; }
+  const main = g;
+  g = pianoLayer.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, W, H);
+  try { drawPiano(now, dpr, pose, size, pressed); } finally { g = main; }
+  g.save();
+  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8));
+  g.drawImage(pianoLayer, 0, 0);
+  g.restore();
+  return true;
+}
+function drawPiano(now, dpr, pose, size, pressed) {
+  const hs = settings.keyHeight;
+  const P = (X, Y, Z) => pose.project(X, Y, Z);
+  g.save();
+
+  // Soft shadow on the table under the whole keyboard.
+  const caseH = (WHITE_HEIGHT_CM + BLACK_EXTRA_CM + 0.8) * hs;
+  const foot = [P(-0.8, -3.4, 0), P(size.w + 0.8, -3.4, 0), P(size.w + 0.8, size.d + 0.6, 0), P(-0.8, size.d + 0.6, 0)];
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 22 * dpr; g.shadowOffsetY = 6 * dpr;
+  polyPath(foot); g.fillStyle = 'rgba(0,0,0,0.38)'; g.fill();
+  g.restore();
+
+  // Case: a back panel behind the keys and thin cheeks at both ends.
+  const caseBoxes = [
+    boxFaces(pose, -0.8, size.w + 0.8, -3.4, 0, 0, caseH),
+    boxFaces(pose, -0.8, 0, 0, size.d * 0.98, 0, WHITE_HEIGHT_CM * hs + 0.4 * hs),
+    boxFaces(pose, size.w, size.w + 0.8, 0, size.d * 0.98, 0, WHITE_HEIGHT_CM * hs + 0.4 * hs),
+  ];
+  for (const faces of caseBoxes) for (const fc of faces) { polyPath(fc.pts); g.fillStyle = KEY_COLORS.case[fc.name]; g.fill(); }
+
+  const accentDark = shade(settings.accent, -0.35);
+  for (const b of keyBoxes(pose, layout, size, pressed, hs)) {
+    const flash = Math.max(0, 1 - (now - (flashes.get(b.key.midi) ?? -1e9)) / 250);
+    const pal = KEY_COLORS[b.key.black ? 'black' : 'white'];
+    for (const fc of b.faces) {
+      polyPath(fc.pts);
+      if (b.down) g.fillStyle = fc.name === 'top' ? settings.accent : accentDark;
+      else g.fillStyle = flash > 0 && fc.name === 'top' ? shade(pal.top, b.key.black ? 0.25 * flash : -0.08 * flash) : pal[fc.name];
+      g.fill();
+      g.strokeStyle = b.key.black ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)';
+      g.lineWidth = 1;
+      g.stroke();
+    }
+    const showLabel = settings.labels === 'all' || (settings.labels === 'c' && b.key.name[0] === 'C' && !b.key.black);
+    if (showLabel) {
+      const t = b.faces.find((fc) => fc.name === 'top').pts;
+      const near = { x: (t[2].x + t[3].x) / 2, y: (t[2].y + t[3].y) / 2 }, far = { x: (t[0].x + t[1].x) / 2, y: (t[0].y + t[1].y) / 2 };
+      const at = { x: near.x + (far.x - near.x) * 0.14, y: near.y + (far.y - near.y) * 0.14 };
+      const w = Math.hypot(t[2].x - t[3].x, t[2].y - t[3].y);
+      g.font = `600 ${Math.max(8 * dpr, Math.min(w * 0.42, 16 * dpr))}px system-ui, sans-serif`;
+      g.textAlign = 'center';
+      g.fillStyle = b.key.black ? 'rgba(255,255,255,0.75)' : 'rgba(40,36,30,0.6)';
+      g.fillText(b.key.black ? b.key.name.replace(/\d/, '') : b.key.name, at.x, at.y);
+    }
+  }
+  g.restore();
+}
+
+// Cut the hands out of the camera picture and draw them over the keys, so
+// fingers sit on top of the keys instead of behind them.
+const handLayer = document.createElement('canvas');
+const hctx = handLayer.getContext('2d');
+function drawHandsOver(W, H) {
+  if (handLayer.width !== W || handLayer.height !== H) { handLayer.width = W; handLayer.height = H; }
+  hctx.setTransform(1, 0, 0, 1, 0, 0);
+  hctx.globalCompositeOperation = 'source-over';
+  hctx.clearRect(0, 0, W, H);
+  hctx.filter = 'blur(2px)'; // soft edge
+  hctx.strokeStyle = hctx.fillStyle = '#fff';
+  hctx.lineCap = hctx.lineJoin = 'round';
+  for (const hand of hands) {
+    const lm = hand.landmarks.map((p) => ({ x: p.x * W, y: p.y * H }));
+    const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
+    hctx.beginPath();
+    [0, 1, 2, 5, 9, 13, 17].forEach((i, k) => (k ? hctx.lineTo(lm[i].x, lm[i].y) : hctx.moveTo(lm[i].x, lm[i].y)));
+    hctx.closePath();
+    hctx.fill();
+    hctx.lineWidth = size * 0.34;
+    hctx.stroke();
+    hctx.lineWidth = size * 0.27; // finger thickness
+    hctx.beginPath();
+    for (const [a, b] of CONNECTIONS) { hctx.moveTo(lm[a].x, lm[a].y); hctx.lineTo(lm[b].x, lm[b].y); }
+    hctx.stroke();
+  }
+  hctx.filter = 'none';
+  hctx.globalCompositeOperation = 'source-in';
+  const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
+  hctx.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
+  hctx.drawImage(video, 0, 0, W, H);
+  hctx.setTransform(1, 0, 0, 1, 0, 0);
+  hctx.globalCompositeOperation = 'source-over';
+  g.drawImage(handLayer, 0, 0);
 }
 
 // ---------- tracking details: what the camera registers, finger by finger ----------
