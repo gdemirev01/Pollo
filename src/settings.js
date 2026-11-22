@@ -1,3 +1,5 @@
+import { isValidQuad, rectQuad } from './layout-editor.js';
+
 // Settings with defaults, remembered in this browser between visits.
 const KEY = 'pollo.settings.v1';
 
@@ -5,7 +7,8 @@ export const DEFAULTS = Object.freeze({
   mode: 'tap',
   startMidi: 60,
   whiteCount: 14,
-  kb: { x: 0.03, y: 0.6, w: 0.94, h: 0.34 },
+  quad: [[0.03, 0.6], [0.97, 0.6], [0.97, 0.94], [0.03, 0.94]], // keyboard corners: TL, TR, BR, BL
+  anchor: true,
   camera: 'facing:user',
   mirror: true,
   flip: false,
@@ -27,11 +30,11 @@ export function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
     for (const k of Object.keys(DEFAULTS)) {
-      if (k === 'kb') continue;
+      if (k === 'quad') continue;
       if (typeof saved[k] === typeof DEFAULTS[k]) s[k] = saved[k];
     }
-    const kb = saved.kb;
-    if (kb && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(kb[k]))) s.kb = { x: kb.x, y: kb.y, w: kb.w, h: kb.h };
+    if (isValidQuad(saved.quad)) s.quad = saved.quad;
+    else if (saved.kb && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(saved.kb[k]))) s.quad = rectQuad(saved.kb); // older saved layout
   } catch { /* storage blocked or corrupt: use defaults */ }
   return s;
 }
@@ -40,4 +43,4 @@ export function saveSettings(s) {
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
 
-export const defaultKeyboardRect = () => ({ ...DEFAULTS.kb });
+export const defaultQuad = () => DEFAULTS.quad.map((p) => [...p]);

@@ -19,6 +19,12 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 2. Press **Move keys** (the arrows button) and drag the keyboard to where your hands are. Drag an edge or corner to resize it. Press **Done**.
 3. Adjust in **Settings**: lowest note, number of keys (5–36 white keys), note names, key opacity, pressed-key colour, camera (front, back or a specific device), mirror, and upside down for a camera mounted flipped.
 
+### Putting the keyboard on the table
+
+- **Snap to hands**: press it, then rest your hands on the table where you want to play and hold still for about a second. The keyboard lands under your fingertips, lined up with them, sized to your hand span. It stays there: it only moves when you use **Move keys** or snap again.
+- **Angle it onto the table**: in **Move keys**, drag a corner to where the table's surface really is (or onto the corners of a paper keyboard). The keys are drawn and hit-tested in perspective. Drag inside to move, drag an edge to resize, **Rectangle** to straighten it out.
+- **Keep keyboard pinned to the table if the camera moves** (on by default): the app remembers what the table looks like around the keyboard and slides the keyboard along if the phone shifts or wobbles. Hands are left out of the comparison. It needs some texture to lock on to (wood grain, a cloth, a printed sheet); on a plain white table it says *Can't follow table*. It follows sliding, not rotating or zooming.
+
 ### Using the back camera from above (Table mode)
 
 Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Table** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated, then **Move keys** to place the keyboard where your hands rest.
@@ -70,7 +76,10 @@ webcam ─► MediaPipe HandLandmarker (WASM + GPU) ─► landmarks (mirrored t
   - *zone*: hit-test the fingertip against the key rectangles, with a small hysteresis margin at the keyboard's top edge.
   - Velocity comes from the fingertip's downward speed.
 - `src/piano.js` — keyboard geometry and hit testing (black keys on top).
-- `src/layout-editor.js` — drag/resize geometry for the keyboard rectangle.
+- `src/homography.js` — perspective mapping between keyboard space and the four corners on screen.
+- `src/layout-editor.js` — moving, angling and resizing the keyboard's corners.
+- `src/snap.js` — waits for still hands and fits the keyboard under the fingertips.
+- `src/stabilizer.js` — follows the table if the camera shifts (masked, coarse-to-fine block matching).
 - `src/settings.js` — defaults and saving to `localStorage`.
 - `src/synth.js` — additive piano voice: inharmonic partials that decay at different rates, a filtered noise "hammer", velocity-dependent brightness, convolution reverb, sustain pedal. Voices are keyed by finger, so two fingers on one key don't cut each other off.
 - `src/main.js` — camera selection, mirror/flip, render loop, touch play, edit mode, UI.

@@ -2,8 +2,11 @@ import { buildLayout, hitTest, noteName, isBlack } from './piano.js';
 import { createDetector, FINGERTIPS } from './detector.js';
 import { PianoSynth } from './synth.js';
 import { createHandTracker } from './hands.js';
-import { loadSettings, saveSettings, defaultKeyboardRect, DEFAULTS } from './settings.js';
-import { grabAt, dragRect, cursorFor } from './layout-editor.js';
+import { loadSettings, saveSettings, defaultQuad, DEFAULTS } from './settings.js';
+import { grabAt, dragQuad, cursorFor, rectQuad, boundsOf, shiftQuad, isValidQuad } from './layout-editor.js';
+import { placement } from './homography.js';
+import { createSteadiness, snapQuad } from './snap.js';
+import { createStabilizer } from './stabilizer.js';
 
 const $ = (s) => document.querySelector(s);
 const video = $('#video');
@@ -25,10 +28,16 @@ const flashes = new Map(); // midi -> time of last hit
 const heldExtra = new Map(); // id -> midi, for touch and computer-keyboard notes
 const pointers = new Map(); // pointerId -> drag or play state
 
+// Keys live in a unit square (u across the keys, v from the far end to the
+// player's side); `place` maps that square onto the keyboard's four corners on
+// screen, so the keyboard can lie on the table in perspective.
 function makeLayout() {
-  const { x, y, w, h } = settings.kb;
-  return buildLayout({ startMidi: settings.startMidi, whiteCount: settings.whiteCount, x, y, width: w, height: h });
+  return buildLayout({ startMidi: settings.startMidi, whiteCount: settings.whiteCount, x: 0, y: 0, width: 1, height: 1 });
 }
+let offset = { dx: 0, dy: 0 }; // how far the table has moved since the keyboard was placed
+const effQuad = () => shiftQuad(settings.quad, offset.dx, offset.dy);
+let place = placement(effQuad());
+const updatePlacement = () => { place = placement(effQuad()); };
 function setStatus(t, cls = '') { const el = $('#status'); el.textContent = t; el.className = cls; }
 const save = () => saveSettings(settings);
 
@@ -97,19 +106,30 @@ function apply(key) {
     }
     case 'startMidi':
     case 'whiteCount':
-    case 'kb':
       handle(detector.reset());
       layout = makeLayout();
+      break;
+    case 'quad':
+      handle(detector.reset());
+      offset = { dx: 0, dy: 0 };
+      updatePlacement();
+      needReference = true;
+      break;
+    case 'anchor':
+      offset = { dx: 0, dy: 0 };
+      updatePlacement();
+      stabilizer.clear();
+      needReference = settings.anchor;
       break;
     case 'volume': if (synth) synth.volume = settings.volume; break;
     case 'reverb': if (synth) synth.reverbAmount = settings.reverb; break;
     case 'mirror':
-    case 'flip': handle(detector.reset()); break;
+    case 'flip': handle(detector.reset()); needReference = true; break;
     case 'camera': if (stream) startCamera().catch(cameraError); break;
     case 'accent': document.documentElement.style.setProperty('--accent', settings.accent); break;
   }
 }
-function applyAll() { ['mode', 'kb', 'volume', 'reverb', 'accent'].forEach(apply); }
+function applyAll() { ['mode', 'startMidi', 'quad', 'volume', 'reverb', 'accent'].forEach(apply); }
 
 for (const el of document.querySelectorAll('[data-setting]')) {
   el.addEventListener('input', () => {
@@ -144,9 +164,13 @@ $('#resetAll').addEventListener('click', () => {
   Object.assign(settings, JSON.parse(JSON.stringify(DEFAULTS)), { camera });
   save(); writeControls(); applyAll();
 });
-const resetKeyboard = () => { settings.kb = defaultKeyboardRect(); save(); apply('kb'); };
+function setQuad(q) { settings.quad = q; save(); apply('quad'); }
+const resetKeyboard = () => setQuad(defaultQuad());
+const squareUp = () => setQuad(rectQuad(boundsOf(settings.quad)));
 $('#resetKb').addEventListener('click', resetKeyboard);
 $('#resetKb2').addEventListener('click', resetKeyboard);
+$('#squareKb').addEventListener('click', squareUp);
+$('#squareKb2').addEventListener('click', squareUp);
 
 // ---------- panel, edit mode, fullscreen ----------
 const narrow = window.matchMedia('(max-width: 900px)');
@@ -160,6 +184,16 @@ $('#panelBtn').addEventListener('click', () => setPanel(!document.body.classList
 $('#panelClose').addEventListener('click', () => setPanel(false));
 
 function setEditing(on) {
+  if (on) {
+    if (snapping) endSnap();
+    // Edit where the keyboard is right now (including any table-following shift).
+    settings.quad = effQuad();
+    offset = { dx: 0, dy: 0 };
+    updatePlacement();
+  } else if (editing) {
+    save();
+    apply('quad');
+  }
   editing = on;
   $('#editBtn').setAttribute('aria-pressed', String(on));
   $('#editBanner').hidden = !on;
@@ -171,6 +205,53 @@ function setEditing(on) {
 $('#editBtn').addEventListener('click', () => setEditing(!editing));
 $('#editBtn2').addEventListener('click', () => setEditing(true));
 $('#doneEdit').addEventListener('click', () => setEditing(false));
+
+// ---------- snap to hands ----------
+let snapping = null; // { steady, started }
+function startSnap() {
+  if (!tracker) { setStatus('Start the camera first, then snap the keyboard to your hands.', 'err'); return; }
+  if (editing) setEditing(false);
+  handle(detector.reset());
+  snapping = { steady: createSteadiness({ hold: 1.2, maxMove: 0.025 }), started: performance.now() };
+  $('#snapBanner').hidden = false;
+  document.body.classList.add('editing');
+  $('#snapText').textContent = 'Rest your hands on the table where you want to play, and hold still.';
+  $('#snapBar').style.width = '0%';
+  if (narrow.matches) setPanel(false);
+}
+function endSnap(message, cls = 'ok') {
+  snapping = null;
+  $('#snapBanner').hidden = true;
+  document.body.classList.remove('editing');
+  if (message) setStatus(message, cls);
+}
+function snapStep(now) {
+  const tips = {}, list = [], wrists = [];
+  for (const hand of hands) {
+    wrists.push(hand.landmarks[0]);
+    for (let f = 1; f < 5; f++) { // index..pinky
+      const p = hand.landmarks[FINGERTIPS[f]];
+      tips[`${hand.id}:${f}`] = p;
+      list.push(p);
+    }
+  }
+  const progress = snapping.steady.add(now / 1000, tips);
+  $('#snapBar').style.width = `${Math.round(progress * 100)}%`;
+  $('#snapText').textContent = !hands.length
+    ? 'No hands in view yet. Rest your hands on the table in front of the camera.'
+    : progress < 1 ? 'Hold still…' : 'Placing the keyboard…';
+  if (progress >= 1) {
+    const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+    const q = snapQuad(list, wrists, aspect);
+    if (q && isValidQuad(q)) { setQuad(q); endSnap('Keyboard placed under your hands. Use Move keys to adjust it.'); }
+    else endSnap('Could not fit the keyboard there. Try with your hands a bit further apart.', 'err');
+  } else if (now - snapping.started > 20000) {
+    endSnap('Could not see your hands holding still. Try again with good light.', 'err');
+  }
+}
+$('#snapBtn').addEventListener('click', startSnap);
+$('#snapBtn2').addEventListener('click', startSnap);
+$('#snapCancel').addEventListener('click', () => endSnap());
 
 const fsTarget = document.documentElement;
 if (!fsTarget.requestFullscreen && !fsTarget.webkitRequestFullscreen) $('#fullBtn').hidden = true;
@@ -202,6 +283,7 @@ async function startCamera() {
   video.srcObject = stream;
   await video.play();
   handle(detector.reset());
+  needReference = true;
   fitStage();
   listCameras();
 }
@@ -277,6 +359,10 @@ function toView(p) {
 }
 
 // ---------- touch / mouse ----------
+function keyAt(x, y) {
+  const l = place.toLocal(x, y);
+  return hitTest(layout, l.x, l.y);
+}
 function toNorm(e) {
   const r = canvas.getBoundingClientRect();
   return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, r };
@@ -289,13 +375,13 @@ function grabTolerance(r) {
 canvas.addEventListener('pointerdown', (e) => {
   const p = toNorm(e);
   if (editing) {
-    const mode = grabAt(settings.kb, p.x, p.y, grabTolerance(p.r));
+    const mode = grabAt(settings.quad, p.x, p.y, grabTolerance(p.r));
     if (!mode) return;
     canvas.setPointerCapture(e.pointerId);
-    pointers.set(e.pointerId, { kind: 'edit', mode, start: { ...settings.kb }, sx: p.x, sy: p.y });
+    pointers.set(e.pointerId, { kind: 'edit', mode, start: settings.quad.map((q) => [...q]), sx: p.x, sy: p.y });
     return;
   }
-  const k = hitTest(layout, p.x, p.y);
+  const k = keyAt(p.x, p.y);
   if (!k || !synth) return;
   canvas.setPointerCapture(e.pointerId);
   const id = `ptr${e.pointerId}`;
@@ -308,14 +394,14 @@ canvas.addEventListener('pointermove', (e) => {
   const p = toNorm(e);
   const st = pointers.get(e.pointerId);
   if (!st) {
-    if (editing) canvas.style.cursor = cursorFor(grabAt(settings.kb, p.x, p.y, grabTolerance(p.r)));
+    if (editing) canvas.style.cursor = cursorFor(grabAt(settings.quad, p.x, p.y, grabTolerance(p.r)), settings.quad);
     return;
   }
   if (st.kind === 'edit') {
-    settings.kb = dragRect(st.start, st.mode, p.x - st.sx, p.y - st.sy);
-    layout = makeLayout();
+    const q = dragQuad(st.start, st.mode, p.x - st.sx, p.y - st.sy);
+    if (q) { settings.quad = q; updatePlacement(); }
   } else {
-    const k = hitTest(layout, p.x, p.y);
+    const k = keyAt(p.x, p.y);
     if (k?.midi !== st.midi) {
       synth?.noteOff(st.id);
       heldExtra.delete(st.id);
@@ -329,7 +415,7 @@ function endPointer(e) {
   const st = pointers.get(e.pointerId);
   if (!st) return;
   pointers.delete(e.pointerId);
-  if (st.kind === 'edit') { save(); apply('kb'); }
+  if (st.kind === 'edit') save();
   else { synth?.noteOff(st.id); heldExtra.delete(st.id); }
 }
 canvas.addEventListener('pointerup', endPointer);
@@ -356,6 +442,59 @@ window.addEventListener('keyup', (e) => {
   heldExtra.delete(`kbd${midi}`);
 });
 
+// ---------- keep the keyboard on the table if the camera moves ----------
+const stabilizer = createStabilizer({ search: 12 });
+let needReference = true;
+let follow = { ok: false, lastGood: 0, frame: 0 };
+const work = document.createElement('canvas');
+const wctx = work.getContext('2d', { willReadFrequently: true });
+
+function grabTable() {
+  const w = 160;
+  const h = Math.max(4, Math.round((w * video.videoHeight) / video.videoWidth) & ~1);
+  if (work.width !== w || work.height !== h) { work.width = w; work.height = h; }
+  const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
+  wctx.setTransform(sx, 0, 0, sy, sx < 0 ? w : 0, sy < 0 ? h : 0);
+  wctx.drawImage(video, 0, 0, w, h);
+  const d = wctx.getImageData(0, 0, w, h).data;
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+  // Hands move on their own: leave them out of the comparison.
+  const mask = new Uint8Array(w * h);
+  for (const hand of hands) {
+    const xs = hand.landmarks.map((p) => p.x), ys = hand.landmarks.map((p) => p.y);
+    let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const px = (x1 - x0) * 0.3 + 0.03, py = (y1 - y0) * 0.3 + 0.03;
+    x0 = Math.max(0, Math.floor((x0 - px) * w)); x1 = Math.min(w, Math.ceil((x1 + px) * w));
+    y0 = Math.max(0, Math.floor((y0 - py) * h)); y1 = Math.min(h, Math.ceil((y1 + py) * h));
+    for (let y = y0; y < y1; y++) mask.fill(1, y * w + x0, y * w + x1);
+  }
+  return { gray, mask, w, h };
+}
+
+function followTable(now) {
+  if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
+  if (needReference) {
+    const { gray, mask, w, h } = grabTable();
+    stabilizer.setReference(gray, mask, w, h);
+    needReference = false;
+    follow = { ok: true, lastGood: now, frame: 0 };
+    return;
+  }
+  if (++follow.frame % 2) return; // every other frame is plenty
+  const { gray, mask, w, h } = grabTable();
+  const r = stabilizer.track(gray, mask, w, h);
+  if (r.confidence > 0.2) {
+    const tx = r.dx / w, ty = r.dy / h;
+    offset = { dx: offset.dx * 0.5 + tx * 0.5, dy: offset.dy * 0.5 + ty * 0.5 };
+    updatePlacement();
+    follow.lastGood = now;
+    follow.ok = true;
+  } else if (now - follow.lastGood > 1500) {
+    follow.ok = false;
+  }
+}
+
 // ---------- loop ----------
 let lastVideoTime = -1;
 let fps = 0, lastFrame = performance.now();
@@ -366,8 +505,10 @@ function frame(now) {
     lastVideoTime = video.currentTime;
     try {
       hands = tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) }));
-      if (!editing) {
-        const res = detector.update(hands, layout, now / 1000);
+      if (snapping) { snapStep(now); active = new Map(); }
+      else if (!editing) {
+        followTable(now);
+        const res = detector.update(hands, layout, now / 1000, place.toLocal);
         handle(res.events);
         active = res.active;
       } else active = new Map();
@@ -418,31 +559,39 @@ function draw(now) {
   for (const m of heldExtra.values()) pressed.add(m);
   const op = settings.opacity;
 
+  const S = (u, v) => { const p = place.toScreen(u, v); return [p.x * W, p.y * H]; };
   const drawKey = (k) => {
-    const x = k.x * W, y = k.y * H, w = k.w * W, h = k.h * H;
     const on = pressed.has(k.midi);
     const flash = Math.max(0, 1 - (now - (flashes.get(k.midi) ?? -1e9)) / 250);
     if (on) g.fillStyle = hexToRgba(settings.accent, k.black ? 0.95 : Math.max(0.7, op));
     else if (k.black) g.fillStyle = `rgba(20,20,28,${Math.min(1, op + 0.3 + flash * 0.1)})`;
     else g.fillStyle = `rgba(255,255,255,${Math.min(1, op * 0.8 + flash * 0.3)})`;
-    roundRect(x + 1, y, w - 2, h, Math.min(6 * dpr, w / 4));
+    const inset = k.w * 0.04;
+    const pts = [S(k.x + inset, k.y), S(k.x + k.w - inset, k.y), S(k.x + k.w - inset, k.y + k.h), S(k.x + inset, k.y + k.h)];
+    g.beginPath();
+    pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.closePath();
     g.fill();
     g.strokeStyle = 'rgba(0,0,0,0.5)';
     g.lineWidth = 1;
     g.stroke();
     const showLabel = settings.labels === 'all' || (settings.labels === 'c' && k.name[0] === 'C' && !k.black);
     if (showLabel) {
+      const [lx, ly] = S(k.x + k.w / 2, k.y + k.h * 0.88);
+      const [ax] = S(k.x, k.y + k.h * 0.88), [bx] = S(k.x + k.w, k.y + k.h * 0.88);
+      const w = Math.abs(bx - ax);
       const size = Math.max(9 * dpr, Math.min(w * (k.black ? 0.4 : 0.3), 18 * dpr));
       g.font = `${size}px system-ui, sans-serif`;
       g.textAlign = 'center';
       g.fillStyle = k.black ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.65)';
-      g.fillText(k.black ? k.name.replace(/\d/, '') : k.name, x + w / 2, y + h - Math.min(10 * dpr, h * 0.08));
+      g.fillText(k.black ? k.name.replace(/\d/, '') : k.name, lx, ly);
     }
   };
   layout.keys.filter((k) => !k.black).forEach(drawKey);
   layout.keys.filter((k) => k.black).forEach(drawKey);
 
   if (editing) drawEditFrame(W, H, dpr);
+  else if (settings.anchor && tracker && !snapping && !settings.tracking) drawFollowBadge(W, H, dpr);
 
   for (const hand of hands) {
     const lm = hand.landmarks;
@@ -472,7 +621,7 @@ function draw(now) {
     });
   }
 
-  if (settings.tracking && tracker) drawTracking(now, W, H, dpr);
+  if (settings.tracking && tracker && !editing) drawTracking(now, W, H, dpr);
 
   $('#fps').textContent = tracker ? `${hands.length} hand${hands.length === 1 ? '' : 's'} · ${fps.toFixed(0)} fps` : '';
 }
@@ -513,7 +662,8 @@ function drawTracking(now, W, H, dpr) {
   const barW = 14 * dpr, gap = 6 * dpr, barH = 40 * dpr, pad = 10 * dpr;
   const panelW = pad * 2 + 5 * barW + 4 * gap + 58 * dpr;
   const rowH = barH + 30 * dpr;
-  const panelH = pad + rows.length * rowH;
+  const footer = settings.anchor ? 22 * dpr : 0;
+  const panelH = pad + rows.length * rowH + footer;
   const px = 10 * dpr, py = 10 * dpr;
   g.fillStyle = 'rgba(15,17,23,0.78)';
   roundRect(px, py, panelW, panelH, 10 * dpr, true); g.fill();
@@ -553,6 +703,13 @@ function drawTracking(now, W, H, dpr) {
     g.textAlign = 'left'; g.font = font(12, 600); g.fillStyle = settings.accent;
     g.fillText(held.join(' '), bx0 + 5 * (barW + gap) + 4 * dpr, by0 + barH / 2 + 4 * dpr);
   });
+  if (footer) {
+    const fy = py + pad + rows.length * rowH + 6 * dpr;
+    g.beginPath(); g.arc(px + pad + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
+    g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
+    g.textAlign = 'left'; g.font = font(11); g.fillStyle = '#ebedf3';
+    g.fillText(follow.ok ? 'Pinned to table' : "Can't follow table", px + pad + 14 * dpr, fy + 4 * dpr);
+  }
 }
 
 function wrapText(text, maxW) {
@@ -567,26 +724,45 @@ function wrapText(text, maxW) {
 }
 
 function drawEditFrame(W, H, dpr) {
-  const { x, y, w, h } = settings.kb;
-  const X = x * W, Y = y * H, RW = w * W, RH = h * H;
+  const q = settings.quad.map(([x, y]) => [x * W, y * H]);
   g.save();
   g.setLineDash([8 * dpr, 6 * dpr]);
   g.strokeStyle = settings.accent;
   g.lineWidth = 2 * dpr;
-  g.strokeRect(X, Y, RW, RH);
+  g.beginPath();
+  q.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+  g.closePath();
+  g.stroke();
   g.setLineDash([]);
-  const r = (matchMedia('(pointer: coarse)').matches ? 11 : 8) * dpr;
-  const pts = [[X, Y], [X + RW / 2, Y], [X + RW, Y], [X + RW, Y + RH / 2], [X + RW, Y + RH], [X + RW / 2, Y + RH], [X, Y + RH], [X, Y + RH / 2]];
-  for (const [px, py] of pts) {
-    g.beginPath();
-    g.arc(px, py, r, 0, Math.PI * 2);
-    g.fillStyle = settings.accent;
-    g.fill();
-    g.strokeStyle = 'rgba(0,0,0,0.6)';
-    g.lineWidth = 1.5 * dpr;
-    g.stroke();
-  }
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  // Corners: big filled handles (they angle the keyboard). Edge midpoints: smaller (resize).
+  q.forEach(([x, y], i) => {
+    const [nx, ny] = q[(i + 1) % 4];
+    handleDot((x + nx) / 2, (y + ny) / 2, (coarse ? 8 : 6) * dpr, 'rgba(15,17,23,0.85)', settings.accent);
+  });
+  q.forEach(([x, y]) => handleDot(x, y, (coarse ? 12 : 9) * dpr, settings.accent, 'rgba(0,0,0,0.6)'));
   g.restore();
+}
+function handleDot(x, y, r, fill, stroke) {
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  g.fillStyle = fill; g.fill();
+  g.strokeStyle = stroke; g.lineWidth = 2; g.stroke();
+}
+
+// Small label in the bottom corner saying whether the keyboard is following the table
+// (shown when the tracking panel, which normally says this, is turned off).
+function drawFollowBadge(W, H, dpr) {
+  const text = follow.ok ? 'Pinned to table' : "Can't follow table: too plain or covered";
+  g.font = `600 ${11 * dpr}px system-ui, sans-serif`;
+  const tw = g.measureText(text).width + 26 * dpr, th = 20 * dpr;
+  const x = W - tw - 8 * dpr, y = H - th - 8 * dpr;
+  g.fillStyle = 'rgba(15,17,23,0.78)';
+  roundRect(x, y, tw, th, th / 2, true); g.fill();
+  g.beginPath(); g.arc(x + 11 * dpr, y + th / 2, 4 * dpr, 0, Math.PI * 2);
+  g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
+  g.fillStyle = '#ebedf3'; g.textAlign = 'left';
+  g.fillText(text, x + 20 * dpr, y + th / 2 + 4 * dpr);
 }
 
 function roundRect(x, y, w, h, r, all = false) {
@@ -608,4 +784,4 @@ fitStage();
 requestAnimationFrame(frame);
 
 // Exposed for debugging in the browser console.
-window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; } };
+window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get offset() { return offset; }, toScreen: (u, v) => place.toScreen(u, v) };
