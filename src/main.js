@@ -10,6 +10,7 @@ import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
 import { autoSizeStep } from './autosize.js';
+import { createLiveSession } from './live.js';
 import { cameraToWorld, intrinsics, worldFromQuad, quadFromWorld, snapToTable } from './gravity.js';
 import { poseFromQuad, keyBoxes, keyboardSize, boxFaces, WHITE_HEIGHT_CM, BLACK_EXTRA_CM } from './ar.js';
 import { apply as applyH } from './homography.js';
@@ -120,8 +121,40 @@ function noteOn(midi, velocity, id) {
   flashes.set(midi, performance.now());
 }
 function handle(events) {
-  for (const e of events) e.type === 'on' ? noteOn(e.midi, e.velocity, e.finger) : synth?.noteOff(e.finger);
+  for (const e of events) {
+    e.type === 'on' ? noteOn(e.midi, e.velocity, e.finger) : synth?.noteOff(e.finger);
+    live.note(e);
+  }
 }
+
+// ---------- live session ----------
+const live = createLiveSession();
+const BUILD = document.getElementById('build')?.textContent || '';
+function liveInfo() {
+  const { vw, vh } = videoSize();
+  return {
+    build: BUILD, ua: navigator.userAgent, video: [vw, vh], screen: [innerWidth, innerHeight, devicePixelRatio],
+    mode: settings.mode, camera: settings.camera, mirror: settings.mirror, flip: settings.flip,
+    whiteCount: settings.whiteCount, startMidi: settings.startMidi, fov: settings.fov, sensitivity: settings.sensitivity,
+    anchor: settings.anchor, useMotion: settings.useMotion, autoSize: settings.autoSize, look3d: settings.look3d,
+    calibrated: !!settings.calibration?.[settings.mode], calibration: settings.calibration?.[settings.mode] || null,
+    quad: effQuad(), motion: orient.ok, pinned: follow.ok,
+  };
+}
+function showLiveState() {
+  const btn = $('#liveBtn'), st = $('#liveState');
+  if (!live.configured) { btn.disabled = true; st.textContent = "Live sessions aren't set up yet (the database isn't connected)."; return; }
+  btn.disabled = false;
+  btn.textContent = live.active ? 'Stop live session' : 'Start live session';
+  const s = live.stats;
+  st.textContent = live.active ? `Live: session code ${live.code}. Sent ${s.sent}${s.failed ? `, failed ${s.failed} (${s.lastError})` : ''}.` : '';
+}
+$('#liveBtn').addEventListener('click', async () => {
+  if (live.active) { await live.stop(liveInfo()); setStatus('Live session stopped.', 'ok'); }
+  else { const c = live.start(liveInfo()); setStatus(`Live session ${c} started: tell Claude the code "${c}".`, 'ok'); }
+  showLiveState();
+});
+setInterval(() => { if (live.active) showLiveState(); }, 1000);
 
 // ---------- settings UI ----------
 function fillStartNotes() {
@@ -164,6 +197,7 @@ function writeControls() {
 }
 
 function apply(key) {
+  if (live.active) live.info({ event: 'setting', key, value: settings[key] });
   switch (key) {
     case 'mode':
     case 'useThumb':
@@ -357,6 +391,7 @@ function snapStep(now) {
         apply('whiteCount');
       }
       setQuad(r.quad);
+      live.info({ event: 'snap', quad: r.quad, keyCount: r.keyCount, motion: !!R });
       endSnap(`Keyboard placed under your hands, one key per finger.${note} Use Move keys to adjust it.`);
     }
     else endSnap('Could not fit the keyboard there. Try with your hands a bit further apart.', 'err');
@@ -429,6 +464,7 @@ function calibrationStep(now) {
     return;
   }
   settings.calibration = { ...settings.calibration, [settings.mode]: result };
+  live.info({ event: 'calibrated', mode: settings.mode, calibration: result });
   save();
   apply('mode');
   const first = Object.values(result.hands)[0];
@@ -760,6 +796,14 @@ function frame(now) {
         const res = detector.update(hands, layout, now / 1000, place.toLocal);
         handle(res.events);
         active = res.active;
+        if (live.active) {
+          const fingers = [];
+          for (const hand of hands) for (let f = 0; f < 5; f++) {
+            const st = detector.smoothed(`${hand.id}:${f}`);
+            if (st) fingers.push([`${hand.id}:${f}`, Math.round(st.signal * 1000) / 1000, st.state[0]]);
+          }
+          live.frame(now, { hands, fingers, fps });
+        }
       } else active = new Map();
     } catch (e) { console.error(e); }
     fps = fps * 0.9 + (1000 / Math.max(1, now - lastFrame)) * 0.1;
@@ -1062,7 +1106,7 @@ function drawTracking(now, W, H, dpr) {
   const scaleMax = settings.mode === 'zone' ? 1 : th.on * 2;
   const rows = [...hands].sort((a, b) => a.landmarks[0].x - b.landmarks[0].x);
   const barW = 14 * dpr, gap = 6 * dpr, barH = 40 * dpr, pad = 10 * dpr;
-  const panelW = Math.max(pad * 2 + 5 * barW + 4 * gap + 58 * dpr, pad * 2 + 196 * dpr);
+  const panelW = Math.max(pad * 2 + 5 * barW + 4 * gap + 58 * dpr, pad * 2 + (live.active ? 250 : 196) * dpr);
   const rowH = barH + 30 * dpr;
   const footer = 22 * dpr;
   const panelH = pad + rows.length * rowH + footer;
@@ -1109,6 +1153,12 @@ function drawTracking(now, W, H, dpr) {
     const fy = py + pad + rows.length * rowH + 6 * dpr;
     let x = px + pad;
     g.textAlign = 'left'; g.font = font(11);
+    if (live.active) {
+      g.fillStyle = '#f87171';
+      const lv = `LIVE ${live.code}`;
+      g.fillText(lv, x, fy + 4 * dpr);
+      x += g.measureText(lv).width + 8 * dpr;
+    }
     g.fillStyle = fps < 15 ? '#fbbf24' : '#9aa1b4';
     const f = `${Math.round(fps)} fps`;
     g.fillText(f, x, fy + 4 * dpr);
@@ -1198,6 +1248,7 @@ function roundRect(x, y, w, h, r, all = false) {
 // ---------- boot ----------
 writeControls();
 applyAll();
+showLiveState();
 fitStage();
 requestAnimationFrame(frame);
 
