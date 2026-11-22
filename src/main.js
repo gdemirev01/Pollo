@@ -901,10 +901,10 @@ function drawHandsOver(W, H) {
     const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
     if (!(size > 1)) continue;
     addShape([0, 1, 2, 5, 9, 13, 17].map((i) => lm[i])); // palm
-    for (const [a, b] of CONNECTIONS) addCapsule(lm[a], lm[b], size * 0.14); // fingers, palm edges
+    for (const [a, b] of CONNECTIONS) addCapsule(lm[a], lm[b], size * 0.105); // fingers, palm edges (snug, so little background comes along)
     // Forearm: a band from the wrist away from the fingers, to the picture's edge.
     const ux = (lm[0].x - lm[9].x) / size, uy = (lm[0].y - lm[9].y) / size, reach = W + H;
-    const half = size * 0.55;
+    const half = size * 0.48;
     const s0 = { x: lm[0].x - ux * size * 0.15, y: lm[0].y - uy * size * 0.15 }, s1 = { x: lm[0].x + ux * reach, y: lm[0].y + uy * reach };
     addShape([{ x: s0.x - uy * half, y: s0.y + ux * half }, { x: s1.x - uy * half, y: s1.y + ux * half }, { x: s1.x + uy * half, y: s1.y - ux * half }, { x: s0.x + uy * half, y: s0.y - ux * half }]);
   }
