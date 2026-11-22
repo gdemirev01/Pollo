@@ -97,11 +97,16 @@ webcam ─► MediaPipe HandLandmarker (WASM + GPU) ─► landmarks (mirrored t
 - `src/ar.js` — camera pose from the keyboard's corners and the angle of view; 3D key boxes and which faces are visible.
 - `src/gravity.js` — device orientation to camera rotation; keyboard corners on the level table; snapping flat onto the table in true perspective.
 - `src/autosize.js` — keeps white keys about one finger-gap wide, scaling around the hand.
+- `src/live.js` — live sessions: batches session data to the database (insert-only).
 - `src/calibrate.js` — tap calibration: learns the tap direction (principal component of knuckle-relative fingertip features) and per-finger tap size.
 - `src/filters.js` — One Euro filter that smooths hand landmarks without lagging fast taps.
 - `src/settings.js` — defaults and saving to `localStorage`.
 - `src/synth.js` — additive piano voice: inharmonic partials that decay at different rates, a filtered noise "hammer", velocity-dependent brightness, convolution reverb, sustain pedal. Voices are keyed by finger, so two fingers on one key don't cut each other off.
 - `src/main.js` — camera selection, mirror/flip, render loop, touch play, edit mode, UI.
+
+## Live sessions
+
+**Settings → Live session** sends what the app sees while you play (hand points 10 times a second, finger heights and states, notes, keyboard position, frame rate, settings; never camera images) to a database, in batches about once a second, under a short session code. The database accepts inserts from the app's public key but doesn't let it read anything back. Configure the database in `src/live.js` (`LIVE_CONFIG`); without it the button is disabled.
 
 ## Tests
 
