@@ -9,6 +9,7 @@ import { createSteadiness, snapLayout, fingerSpacing } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
+import { autoSizeStep } from './autosize.js';
 import { poseFromQuad, keyBoxes, keyboardSize, boxFaces, WHITE_HEIGHT_CM, BLACK_EXTRA_CM } from './ar.js';
 import { apply as applyH } from './homography.js';
 
@@ -642,8 +643,29 @@ function followTable(now) {
   }
 }
 
+// ---------- keys that keep fitting the fingers ----------
+let lastResize = 0, sizeDirty = false, lastSizeSave = 0;
+function autoResize(now) {
+  const dt = lastResize ? Math.min(0.2, (now - lastResize) / 1000) : 1 / 30;
+  lastResize = now;
+  if (sizeDirty && (!hands.length || now - lastSizeSave > 2000)) { save(); sizeDirty = false; lastSizeSave = now; }
+  // When pinned to a textured table, the table tracker already handles the phone's distance.
+  if (!settings.autoSize || !hands.length || (settings.anchor && follow.ok)) return;
+  const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+  const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
+  const base = effQuad();
+  const q = autoSizeStep(base, settings.whiteCount, perHand, aspect, { dt });
+  if (!q) return;
+  settings.quad = q;
+  tableMotion = null; lastGoodQuad = null;
+  needReference = true; // the table tracker starts again from the new size
+  updatePlacement();
+  sizeDirty = true;
+}
+
 // ---------- loop ----------
 const smoother = createHandSmoother();
+let lastHandSeen = -1e9, pianoAlpha = 0, lastDraw = 0;
 let lastVideoTime = -1;
 let fps = 0, lastFrame = performance.now();
 
@@ -652,11 +674,13 @@ function frame(now) {
   if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     try {
+      if (hands.length) lastHandSeen = now;
       hands = smoother.smooth(tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) })), now / 1000);
       if (calibrating) { calibrationStep(now); active = new Map(); }
       else if (snapping) { snapStep(now); active = new Map(); }
       else if (!editing) {
         followTable(now);
+        autoResize(now);
         const res = detector.update(hands, layout, now / 1000, place.toLocal);
         handle(res.events);
         active = res.active;
@@ -704,6 +728,15 @@ function draw(now) {
     g.fillRect(0, 0, W, H);
   }
 
+  // The piano shows once your hands are in view, and fades out a little after they leave.
+  // Always shown while editing, and when there's no camera (so touch play still works).
+  const seen = hands.length ? now : lastHandSeen;
+  const showPiano = !tracker || editing || (now - seen < 2000 && !snapping);
+  const fadeStep = Math.min(1, (now - (lastDraw || now)) / 250);
+  lastDraw = now;
+  pianoAlpha += ((showPiano ? 1 : 0) - pianoAlpha) * (fadeStep || 1);
+  if (pianoAlpha < 0.01) pianoAlpha = 0;
+
   const pressed = new Set([...active.values()].map((k) => k.midi));
   for (const m of heldExtra.values()) pressed.add(m);
   const op = settings.opacity;
@@ -737,14 +770,18 @@ function draw(now) {
     }
   };
   let drew3d = false;
-  if (settings.look3d) {
+  g.save();
+  g.globalAlpha = pianoAlpha;
+  if (pianoAlpha === 0) { /* nothing to draw yet */ }
+  else if (settings.look3d) {
     try { drew3d = drawKeys3D(now, W, H, dpr, pressed); } catch (e) { reportDrawError('3D keys', e); }
   }
-  if (!drew3d) {
+  if (!drew3d && pianoAlpha > 0) {
     layout.keys.filter((k) => !k.black).forEach(drawKey);
     layout.keys.filter((k) => k.black).forEach(drawKey);
   }
-  if (settings.occlusion && drew3d && hands.length && video.readyState >= 2) {
+  g.restore();
+  if (settings.occlusion && drew3d && pianoAlpha > 0 && hands.length && video.readyState >= 2) {
     try { drawHandsOver(W, H); } catch (e) { reportDrawError('hands in front of keys', e); }
   }
 
@@ -821,7 +858,7 @@ function drawKeys3D(now, W, H, dpr, pressed) {
   g.clearRect(0, 0, W, H);
   try { drawPiano(now, dpr, pose, size, pressed); } finally { g = main; }
   g.save();
-  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8));
+  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8)) * pianoAlpha;
   g.drawImage(pianoLayer, 0, 0);
   g.restore();
   return true;
@@ -1088,4 +1125,4 @@ fitStage();
 requestAnimationFrame(frame);
 
 // Exposed for debugging in the browser console.
-window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get tableMotion() { return tableMotion; }, get follow() { return follow; }, effQuad, toScreen: (u, v) => place.toScreen(u, v) };
+window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get tableMotion() { return tableMotion; }, get pianoAlpha() { return pianoAlpha; }, get follow() { return follow; }, effQuad, toScreen: (u, v) => place.toScreen(u, v) };

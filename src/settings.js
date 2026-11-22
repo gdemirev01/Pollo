@@ -14,7 +14,8 @@ export const DEFAULTS = Object.freeze({
   look3d: true, // keys drawn as 3D blocks standing on the table
   keyHeight: 1, // 1 = real piano proportions
   fov: 65, // camera angle of view across the picture's long side, degrees
-  occlusion: true, // draw the hands in front of the keys // tap calibration per mode ('tap', 'surface'), from calibrate.js // place the keyboard under the hands when they're first seen
+  occlusion: true, // draw the hands in front of the keys
+  autoSize: true, // keep keys one finger-gap wide as the phone moves closer or further // tap calibration per mode ('tap', 'surface'), from calibrate.js // place the keyboard under the hands when they're first seen
   camera: 'facing:user',
   mirror: true,
   flip: false,
