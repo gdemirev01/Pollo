@@ -15,6 +15,7 @@ export const DEFAULTS = Object.freeze({
   keyHeight: 1, // 1 = real piano proportions
   fov: 65, // camera angle of view across the picture's long side, degrees
   occlusion: true, // draw the hands in front of the keys
+  useMotion: true, // use the phone's motion sensors to keep the keyboard flat on the table
   autoSize: true, // keep keys one finger-gap wide as the phone moves closer or further // tap calibration per mode ('tap', 'surface'), from calibrate.js // place the keyboard under the hands when they're first seen
   camera: 'facing:user',
   mirror: true,
