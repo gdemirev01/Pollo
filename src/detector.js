@@ -16,6 +16,7 @@
 // key under the fingertip. It's released when the finger lifts off again. When
 // one finger strikes, neighbours that only twitched along with it are ignored.
 import { hitTest } from './piano.js';
+import { featuresOf, calibratedHeight } from './calibrate.js';
 
 export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const FINGER_BASES = [2, 5, 9, 13, 17]; // knuckle each finger is measured from
@@ -26,7 +27,9 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 const STRIKE_DEFAULTS = {
   tap: { travel: 0.14, contact: 0.05, release: 0.1, speed: 0.9 },
-  surface: { travel: 0.15, contact: 0.06, release: 0.11, speed: 0.8 },
+  surface: { travel: 0.1, contact: 0.04, release: 0.07, speed: 0.6 },
+  // After calibration heights are in "typical taps": 0 resting, about 1 at the top.
+  calibrated: { travel: 0.4, contact: 0.15, release: 0.28, speed: 2.2 },
 };
 
 export function createDetector(opts = {}) {
@@ -38,24 +41,23 @@ export function createDetector(opts = {}) {
     zoneMargin: 0.015,
     useThumb: false,
     chordRatio: 0.55, // a finger striking with < this fraction of the strongest finger's speed is a twitch
+    calibration: null, // from calibrate.js, for the current mode
     ...opts,
   };
   const fingers = new Map(); // fingerId -> state
 
   function strikeCfg() {
-    const d = STRIKE_DEFAULTS[cfg.mode] || STRIKE_DEFAULTS.tap;
+    const d = cfg.calibration ? STRIKE_DEFAULTS.calibrated : STRIKE_DEFAULTS[cfg.mode] || STRIKE_DEFAULTS.tap;
     const k = cfg.scale;
     return { travel: d.travel * k, contact: d.contact, release: d.contact + (d.release - d.contact) * k, speed: d.speed * k };
   }
 
   /** Raw height of a finger above the table (bigger = lifted), before subtracting the table level. */
-  function rawHeight(lm, f, size) {
-    const tip = lm[FINGERTIPS[f]], base = lm[FINGER_BASES[f]];
-    if (cfg.mode === 'surface') {
-      const len = dist(base, tip) / size;
-      return cfg.depthWeight * (-(tip.z ?? 0) / size) - cfg.lengthWeight * len;
-    }
-    return (base.y - tip.y) / size;
+  function rawHeight(lm, f, size, handId) {
+    if (cfg.calibration) return calibratedHeight(cfg.calibration, handId, lm, f, size);
+    const [up, , depth, length] = featuresOf(lm, f, size);
+    if (cfg.mode === 'surface') return cfg.depthWeight * depth + cfg.lengthWeight * length;
+    return up;
   }
 
   /**
@@ -108,7 +110,7 @@ export function createDetector(opts = {}) {
         }
 
         // Height above this finger's learned table level.
-        const raw = rawHeight(lm, f, size);
+        const raw = rawHeight(lm, f, size, hand.id);
         if (st.table === null) st.table = raw;
         st.table += (raw < st.table ? 0.3 : 0.004) * (raw - st.table);
         const h = Math.max(0, raw - st.table);
@@ -149,7 +151,8 @@ export function createDetector(opts = {}) {
         const key = hitTest(layout, l.x, l.y);
         if (key) {
           st.key = key;
-          events.push({ type: 'on', midi: key.midi, velocity: Math.max(0.35, Math.min(1, 0.35 + c.speed / 8)), finger: id });
+          const v = c.speed / (S.speed / STRIKE_DEFAULTS.tap.speed); // comparable loudness with or without calibration
+          events.push({ type: 'on', midi: key.midi, velocity: Math.max(0.35, Math.min(1, 0.35 + v / 8)), finger: id });
         }
       }
     }

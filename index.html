@@ -27,6 +27,10 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z"/><path d="M6 8h4M14 8h4"/></svg>
               <span>Snap to hands</span>
             </button>
+            <button class="tool" id="calBtn" title="Teach the app what your taps look like">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v8"/><path d="M16 12V7a2 2 0 0 1 4 0v7a7 7 0 0 1-7 7h-1a6 6 0 0 1-5-3l-3-5a2 2 0 0 1 3-2l1 2"/></svg>
+              <span>Calibrate taps</span>
+            </button>
             <button class="tool" id="editBtn" aria-pressed="false" title="Move and resize the keyboard">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>
               <span>Move keys</span>
@@ -68,6 +72,14 @@
           </div>
         </div>
 
+        <div class="edit-banner snap" id="calBanner" hidden>
+          <div class="snap-body">
+            <p id="calText">Tap each finger on the table a few times, one finger at a time, like playing slow notes.</p>
+            <div class="progress"><div id="calBar"></div></div>
+          </div>
+          <button class="ghost" id="calCancel">Cancel</button>
+        </div>
+
         <div class="edit-banner snap" id="snapBanner" hidden>
           <div class="snap-body">
             <p id="snapText">Rest your hands on the table where you want to play, and hold still.</p>
@@ -97,6 +109,11 @@
           <label for="sensitivity"><span>Tap sensitivity<output data-for="sensitivity"></output></span>
             <input id="sensitivity" data-setting="sensitivity" type="range" min="1" max="10" step="1" />
           </label>
+          <div class="row">
+            <button class="ghost" id="calBtn2">Calibrate taps</button>
+            <button class="ghost" id="calClear">Clear calibration</button>
+          </div>
+          <p class="small" id="calState"></p>
           <label class="check" for="useThumb"><input id="useThumb" data-setting="useThumb" type="checkbox" /> Use thumbs</label>
         </fieldset>
 

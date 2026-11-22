@@ -8,6 +8,7 @@ import { placement } from './homography.js';
 import { createSteadiness, snapQuad } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
+import { createCalibrator } from './calibrate.js';
 import { apply as applyH } from './homography.js';
 
 const $ = (s) => document.querySelector(s);
@@ -105,7 +106,11 @@ function apply(key) {
     case 'sensitivity': {
       const v = settings.sensitivity; // 1..10, higher = smaller, gentler taps count
       handle(detector.reset());
-      detector.setOptions({ mode: settings.mode, useThumb: settings.useThumb, scale: 1.6 - v * 0.12 });
+      detector.setOptions({
+        mode: settings.mode, useThumb: settings.useThumb, scale: 1.6 - v * 0.12,
+        calibration: settings.calibration?.[settings.mode] || null,
+      });
+      showCalState();
       updateHint();
       break;
     }
@@ -263,6 +268,74 @@ function snapStep(now) {
 $('#snapBtn').addEventListener('click', startSnap);
 $('#snapBtn2').addEventListener('click', startSnap);
 $('#snapCancel').addEventListener('click', () => endSnap());
+
+// ---------- tap calibration ----------
+const CAL_SECONDS = 8;
+let calibrating = null; // { cal, seen, last }
+const FINGER_LABELS = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+
+function showCalState() {
+  const el = $('#calState');
+  if (settings.mode === 'zone') { el.textContent = 'Touch mode needs no calibration.'; return; }
+  el.textContent = settings.calibration?.[settings.mode]
+    ? 'Taps are calibrated for this camera setup.'
+    : 'Not calibrated. If taps don\'t register well, calibrate: it learns how your taps look from this camera angle.';
+}
+
+function startCalibration() {
+  if (!tracker) { setStatus('Start the camera first, then calibrate your taps.', 'err'); return; }
+  if (settings.mode === 'zone') { setStatus('Touch mode needs no calibration. Pick a Tap the table mode first.', 'err'); return; }
+  if (editing) setEditing(false);
+  if (snapping) endSnap();
+  handle(detector.reset());
+  calibrating = { cal: createCalibrator(), seen: 0, last: null };
+  $('#calBanner').hidden = false;
+  document.body.classList.add('editing');
+  $('#calBar').style.width = '0%';
+  $('#calText').textContent = 'Rest your hands on the table, then tap each finger a few times, one at a time, like slow notes.';
+  if (narrow.matches) setPanel(false);
+}
+function endCalibration(message, cls = 'ok') {
+  calibrating = null;
+  $('#calBanner').hidden = true;
+  document.body.classList.remove('editing');
+  if (message) setStatus(message, cls);
+}
+function calibrationStep(now) {
+  const t = now / 1000;
+  if (hands.length) {
+    calibrating.cal.add(hands);
+    if (calibrating.last !== null) calibrating.seen += Math.min(0.2, t - calibrating.last);
+  }
+  calibrating.last = t;
+  const p = Math.min(1, calibrating.seen / CAL_SECONDS);
+  $('#calBar').style.width = `${Math.round(p * 100)}%`;
+  $('#calText').textContent = hands.length
+    ? `Tap each finger a few times, one at a time… ${Math.ceil(CAL_SECONDS - calibrating.seen)} s`
+    : 'Show your hands on the table to continue.';
+  if (p < 1) return;
+  const result = calibrating.cal.result();
+  if (!result) {
+    endCalibration(hands.length || calibrating?.seen
+      ? "Didn't see clear taps. Calibrate again and lift each finger a little higher before tapping it down."
+      : "Calibration didn't get enough of your hands. Try again with your hands in view.", 'err');
+    return;
+  }
+  settings.calibration = { ...settings.calibration, [settings.mode]: result };
+  save();
+  apply('mode');
+  const first = Object.values(result.hands)[0];
+  const counts = first.taps.slice(1).map((n, i) => `${FINGER_LABELS[i + 1]} ${n}`).join(', ');
+  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.`);
+}
+$('#calBtn').addEventListener('click', startCalibration);
+$('#calBtn2').addEventListener('click', startCalibration);
+$('#calCancel').addEventListener('click', () => endCalibration());
+$('#calClear').addEventListener('click', () => {
+  const c = { ...settings.calibration }; delete c[settings.mode];
+  settings.calibration = c; save(); apply('mode');
+  setStatus('Calibration cleared for this mode.', 'ok');
+});
 
 const fsTarget = document.documentElement;
 if (!fsTarget.requestFullscreen && !fsTarget.webkitRequestFullscreen) $('#fullBtn').hidden = true;
@@ -486,8 +559,11 @@ function grabTable() {
   return { gray, mask, w, h };
 }
 
+let followSkip = 0;
 function followTable(now) {
   if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
+  // On a slow phone, follow the table every other frame to leave time for hand tracking.
+  if (!needReference && fps < 22 && followSkip++ % 2) return;
   const { gray, mask, w, h } = grabTable();
   if (needReference) {
     surface.setReference(gray, mask, w, h);
@@ -518,7 +594,8 @@ function frame(now) {
     lastVideoTime = video.currentTime;
     try {
       hands = smoother.smooth(tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) })), now / 1000);
-      if (snapping) { snapStep(now); active = new Map(); }
+      if (calibrating) { calibrationStep(now); active = new Map(); }
+      else if (snapping) { snapStep(now); active = new Map(); }
       else if (!editing) {
         followTable(now);
         const res = detector.update(hands, layout, now / 1000, place.toLocal);
@@ -673,11 +750,11 @@ function drawTracking(now, W, H, dpr) {
   const scaleMax = settings.mode === 'zone' ? 1 : th.on * 2;
   const rows = [...hands].sort((a, b) => a.landmarks[0].x - b.landmarks[0].x);
   const barW = 14 * dpr, gap = 6 * dpr, barH = 40 * dpr, pad = 10 * dpr;
-  const panelW = pad * 2 + 5 * barW + 4 * gap + 58 * dpr;
+  const panelW = Math.max(pad * 2 + 5 * barW + 4 * gap + 58 * dpr, pad * 2 + 196 * dpr);
   const rowH = barH + 30 * dpr;
-  const footer = settings.anchor ? 22 * dpr : 0;
+  const footer = 22 * dpr;
   const panelH = pad + rows.length * rowH + footer;
-  const px = 10 * dpr, py = 10 * dpr;
+  const px = 10 * dpr, py = 62 * dpr; // below the toolbar
   g.fillStyle = 'rgba(15,17,23,0.78)';
   roundRect(px, py, panelW, panelH, 10 * dpr, true); g.fill();
 
@@ -716,12 +793,27 @@ function drawTracking(now, W, H, dpr) {
     g.textAlign = 'left'; g.font = font(12, 600); g.fillStyle = settings.accent;
     g.fillText(held.join(' '), bx0 + 5 * (barW + gap) + 4 * dpr, by0 + barH / 2 + 4 * dpr);
   });
-  if (footer) {
+  {
     const fy = py + pad + rows.length * rowH + 6 * dpr;
-    g.beginPath(); g.arc(px + pad + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
-    g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
-    g.textAlign = 'left'; g.font = font(11); g.fillStyle = '#ebedf3';
-    g.fillText(follow.ok ? 'Pinned to table' : "Can't follow table", px + pad + 14 * dpr, fy + 4 * dpr);
+    let x = px + pad;
+    g.textAlign = 'left'; g.font = font(11);
+    g.fillStyle = fps < 15 ? '#fbbf24' : '#9aa1b4';
+    const f = `${Math.round(fps)} fps`;
+    g.fillText(f, x, fy + 4 * dpr);
+    x += g.measureText(f).width + 8 * dpr;
+    if (settings.mode !== 'zone') {
+      const cal = !!detector.config.calibration;
+      g.fillStyle = cal ? '#9aa1b4' : '#fbbf24';
+      const c = cal ? 'calibrated' : 'not calibrated';
+      g.fillText(c, x, fy + 4 * dpr);
+      x += g.measureText(c).width + 8 * dpr;
+    }
+    if (settings.anchor) {
+      g.beginPath(); g.arc(x + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
+      g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
+      g.fillStyle = '#ebedf3';
+      g.fillText(follow.ok ? 'pinned' : 'not pinned', x + 12 * dpr, fy + 4 * dpr);
+    }
   }
 }
 

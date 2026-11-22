@@ -30,6 +30,10 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 
 Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Tap the table (camera above)** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated.
 
+### Calibrating taps
+
+Every camera angle shows a tap differently: from the front the fingertip moves up and down in the picture, from straight above it mostly gets closer to the camera, and from an angle above it may slide sideways. Press **Calibrate taps**, rest your hands on the table, and tap each finger a few times for about 8 seconds. The app learns which way your taps move in the picture from this camera angle and how big they are for each finger, and sets the thresholds from your own taps. It tells you how many taps it saw per finger; if one shows 0, calibrate again and include that finger. If it only saw jitter (no clear taps) it says so and keeps the previous setting. Calibration is saved separately for the front and overhead modes; **Clear calibration** goes back to the defaults.
+
 ### Watching what the camera registers
 
 **Show tracking details** (on by default) draws a panel with a meter per finger for each hand in view:
@@ -38,7 +42,7 @@ Mount the phone over the table with the back camera pointing down (a phone stand
 - the solid line is how high it has to be lifted for a tap to count, the dotted line is where it counts as touching the table,
 - grey = resting, amber = lifted and ready to strike, your accent colour = playing; the notes being held are listed beside it.
 
-A lifted fingertip also gets an amber ring on the video. If no hand is found for a moment, a message in the middle of the picture says so. **Tap sensitivity**: higher means smaller, gentler taps count.
+The bottom line of the panel shows the frame rate (amber below 15 fps, when quick taps can be missed), whether taps are calibrated, and whether the keyboard is pinned to the table. A lifted fingertip also gets an amber ring on the video. If no hand is found for a moment, a message in the middle of the picture says so. **Tap sensitivity**: higher means smaller, gentler taps count.
 
 Settings and the keyboard position are saved in the browser. You can also play by touching or clicking the keys on screen. **Full screen** and keep-screen-awake help when it's propped up on a phone.
 
@@ -81,6 +85,7 @@ webcam ─► MediaPipe HandLandmarker (WASM + GPU) ─► landmarks (mirrored t
 - `src/layout-editor.js` — moving, angling and resizing the keyboard's corners.
 - `src/snap.js` — waits for still hands and fits the keyboard under the fingertips.
 - `src/surface-tracker.js` — keeps the keyboard on the table when the phone moves: corner points, warped-patch matching, robust perspective fit, re-seeding.
+- `src/calibrate.js` — tap calibration: learns the tap direction (principal component of knuckle-relative fingertip features) and per-finger tap size.
 - `src/filters.js` — One Euro filter that smooths hand landmarks without lagging fast taps.
 - `src/settings.js` — defaults and saving to `localStorage`.
 - `src/synth.js` — additive piano voice: inharmonic partials that decay at different rates, a filtered noise "hammer", velocity-dependent brightness, convolution reverb, sustain pedal. Voices are keyed by finger, so two fingers on one key don't cut each other off.
