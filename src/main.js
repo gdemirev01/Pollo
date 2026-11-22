@@ -46,8 +46,17 @@ function effQuad() {
   if (!tableMotion) return settings.quad;
   const { H, w, h } = tableMotion;
   const q = settings.quad.map(([x, y]) => { const p = applyH(H, x * w, y * h); return [p.x / w, p.y / h]; });
-  if (isValidQuad(q)) lastGoodQuad = q;
+  if (plausible(q)) lastGoodQuad = q;
   return lastGoodQuad || settings.quad;
+}
+// Safety net: never let table following throw the keyboard somewhere it can't be
+// (off screen, or suddenly much bigger or smaller than where it was placed).
+function plausible(q) {
+  if (!isValidQuad(q)) return false;
+  const area = (Q) => Math.abs(Q.reduce((s, p, i) => { const n = Q[(i + 1) % 4]; return s + p[0] * n[1] - n[0] * p[1]; }, 0)) / 2;
+  const ratio = area(q) / Math.max(1e-6, area(settings.quad));
+  const cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
+  return ratio > 0.4 && ratio < 2.5 && cx > -0.05 && cx < 1.05 && cy > -0.05 && cy < 1.05;
 }
 let place = placement(effQuad());
 const updatePlacement = () => { place = placement(effQuad()); };
@@ -558,6 +567,22 @@ function grabTable() {
     x0 = Math.max(0, Math.floor((x0 - px) * w)); x1 = Math.min(w, Math.ceil((x1 + px) * w));
     y0 = Math.max(0, Math.floor((y0 - py) * h)); y1 = Math.min(h, Math.ceil((y1 + py) * h));
     for (let y = y0; y < y1; y++) mask.fill(1, y * w + x0, y * w + x1);
+    // The forearm: a wide band from the wrist away from the fingers, to the picture's edge.
+    const wr = hand.landmarks[0], mc = hand.landmarks[9];
+    const ax = wr.x * w, ay = wr.y * h;
+    let dx = (wr.x - mc.x) * w, dy = (wr.y - mc.y) * h;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    const half = len * 0.8, reach = (w + h) * 2;
+    const bx = ax + dx * reach, by = ay + dy * reach;
+    const minX = Math.max(0, Math.floor(Math.min(ax, bx) - half)), maxX = Math.min(w - 1, Math.ceil(Math.max(ax, bx) + half));
+    const minY = Math.max(0, Math.floor(Math.min(ay, by) - half)), maxY = Math.min(h - 1, Math.ceil(Math.max(ay, by) + half));
+    for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+      const tAlong = (x - ax) * dx + (y - ay) * dy;
+      if (tAlong < -half) continue;
+      const perp = Math.abs((x - ax) * dy - (y - ay) * dx);
+      if (perp <= half) mask[y * w + x] = 1;
+    }
   }
   return { gray, mask, w, h };
 }
@@ -680,11 +705,17 @@ function draw(now) {
       g.fillText(k.black ? k.name.replace(/\d/, '') : k.name, lx, ly);
     }
   };
-  if (!(settings.look3d && drawKeys3D(now, W, H, dpr, pressed))) {
+  let drew3d = false;
+  if (settings.look3d) {
+    try { drew3d = drawKeys3D(now, W, H, dpr, pressed); } catch (e) { reportDrawError('3D keys', e); }
+  }
+  if (!drew3d) {
     layout.keys.filter((k) => !k.black).forEach(drawKey);
     layout.keys.filter((k) => k.black).forEach(drawKey);
   }
-  if (settings.occlusion && settings.look3d && hands.length && video.readyState >= 2) drawHandsOver(W, H);
+  if (settings.occlusion && drew3d && hands.length && video.readyState >= 2) {
+    try { drawHandsOver(W, H); } catch (e) { reportDrawError('hands in front of keys', e); }
+  }
 
   if (editing) drawEditFrame(W, H, dpr);
   else if (settings.anchor && tracker && !snapping && !settings.tracking) drawFollowBadge(W, H, dpr);
@@ -720,6 +751,16 @@ function draw(now) {
   if (settings.tracking && tracker && !editing) drawTracking(now, W, H, dpr);
 
   $('#fps').textContent = tracker ? `${hands.length} hand${hands.length === 1 ? '' : 's'} · ${fps.toFixed(0)} fps` : '';
+}
+
+// If drawing fails on some device, fall back (flat keys / no hand overlay) and say
+// so once in the status line, so the piano never vanishes silently.
+const drawErrors = new Set();
+function reportDrawError(what, e) {
+  console.error(e);
+  if (drawErrors.has(what)) return;
+  drawErrors.add(what);
+  setStatus(`Couldn't draw ${what} on this device (${e?.message || e}). Showing a simpler view.`, 'err');
 }
 
 // ---------- 3D keys on the table ----------
@@ -828,6 +869,16 @@ function drawHandsOver(W, H) {
     hctx.beginPath();
     for (const [a, b] of CONNECTIONS) { hctx.moveTo(lm[a].x, lm[a].y); hctx.lineTo(lm[b].x, lm[b].y); }
     hctx.stroke();
+    // The forearm: a wide band from the wrist away from the fingers, to the picture's edge.
+    const dx = lm[0].x - lm[9].x, dy = lm[0].y - lm[9].y;
+    const reach = (W + H) / Math.max(1e-3, size);
+    hctx.lineWidth = size * 1.15;
+    hctx.lineCap = 'butt';
+    hctx.beginPath();
+    hctx.moveTo(lm[0].x - dx * 0.15, lm[0].y - dy * 0.15);
+    hctx.lineTo(lm[0].x + dx * reach, lm[0].y + dy * reach);
+    hctx.stroke();
+    hctx.lineCap = 'round';
   }
   hctx.filter = 'none';
   hctx.globalCompositeOperation = 'source-in';

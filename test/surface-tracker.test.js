@@ -106,3 +106,32 @@ test('does not chase a small moving object on an otherwise plain table', () => {
     assert.equal(out.ok, false, `followed the card at step ${i}`);
   }
 });
+
+test('an arm sliding over most of the table does not drag the keyboard (camera still)', () => {
+  const table = makeTable();
+  let r = 21;
+  const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
+  const AW = 240, AH = 200;
+  const sleeve = Array.from({ length: AW * AH }, () => 60 + rnd() * 150); // textured sleeve, not masked
+  const frame = (armX) => {
+    const f = render(table, viewMatrix({}), null);
+    for (let y = 20; y < 20 + AH; y++) for (let x = 0; x < AW; x++) {
+      const X = Math.round(armX) + x;
+      if (X >= 0 && X < W) f.img[y * W + X] = sleeve[(y - 20) * AW + x]; // sleeve texture moves with the arm
+    }
+    return f;
+  };
+  const t = createSurfaceTracker();
+  const first = frame(-400); // arm out of view
+  t.setReference(first.img, first.mask, W, H);
+  let worst = 0;
+  for (let i = 0; i <= 30; i++) {
+    const f = frame(-240 + i * 10); // arm slides in from the left and across
+    const out = t.track(f.img, f.mask, W, H);
+    for (const [x, y] of [[60, 150], [260, 150], [260, 220], [60, 220]]) {
+      const p = apply(out.H, x, y);
+      worst = Math.max(worst, Math.hypot(p.x - x, p.y - y));
+    }
+  }
+  assert.ok(worst < 2, `keyboard dragged by ${worst.toFixed(1)} px`);
+});
