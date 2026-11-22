@@ -40,3 +40,93 @@ export function placement(q) {
     toLocal: (x, y) => (Hi ? apply(Hi, x, y) : { x: -1, y: -1 }),
   };
 }
+
+// ---------- fitting a homography to matched points ----------
+
+function solve(A, b) {
+  // Gaussian elimination with partial pivoting; A is n x n (array of rows).
+  const n = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-12) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = M[r][n];
+    for (let k = r + 1; k < n; k++) s -= M[r][k] * x[k];
+    x[r] = s / M[r][r];
+  }
+  return x;
+}
+
+const mul = (A, B) => {
+  const C = new Array(9).fill(0);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) C[i * 3 + j] += A[i * 3 + k] * B[k * 3 + j];
+  return C;
+};
+export { mul as multiply };
+
+function normalizer(pts) {
+  const n = pts.length;
+  const cx = pts.reduce((s, p) => s + p.x, 0) / n, cy = pts.reduce((s, p) => s + p.y, 0) / n;
+  const d = pts.reduce((s, p) => s + Math.hypot(p.x - cx, p.y - cy), 0) / n || 1;
+  const k = Math.SQRT2 / d;
+  return [k, 0, -k * cx, 0, k, -k * cy, 0, 0, 1];
+}
+
+/** Least-squares homography taking src[i] to dst[i] (4 or more pairs of {x, y}). */
+export function fitHomography(src, dst) {
+  if (src.length < 4) return null;
+  const Ts = normalizer(src), Td = normalizer(dst);
+  const s = src.map((p) => apply(Ts, p.x, p.y)), d = dst.map((p) => apply(Td, p.x, p.y));
+  const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0));
+  const Atb = new Array(8).fill(0);
+  const add = (row, rhs) => {
+    for (let i = 0; i < 8; i++) {
+      Atb[i] += row[i] * rhs;
+      for (let j = 0; j < 8; j++) AtA[i][j] += row[i] * row[j];
+    }
+  };
+  for (let i = 0; i < s.length; i++) {
+    const { x, y } = s[i], { x: u, y: v } = d[i];
+    add([x, y, 1, 0, 0, 0, -u * x, -u * y], u);
+    add([0, 0, 0, x, y, 1, -v * x, -v * y], v);
+  }
+  const h = solve(AtA, Atb);
+  if (!h) return null;
+  const Hn = [...h, 1];
+  const TdInv = invert(Td);
+  if (!TdInv) return null;
+  const H = mul(TdInv, mul(Hn, Ts));
+  return H.map((v) => v / H[8]);
+}
+
+/** Robust fit: tries random 4-point sets, keeps the one most points agree with, then refits on those. */
+export function ransacHomography(src, dst, { iterations = 150, threshold = 2.5, rng = Math.random } = {}) {
+  const n = src.length;
+  if (n < 4) return null;
+  let best = null, bestCount = 0;
+  const err = (H, i) => { const p = apply(H, src[i].x, src[i].y); return Math.hypot(p.x - dst[i].x, p.y - dst[i].y); };
+  for (let it = 0; it < iterations; it++) {
+    const idx = new Set();
+    while (idx.size < 4) idx.add(Math.floor(rng() * n));
+    const pick = [...idx];
+    const H = fitHomography(pick.map((i) => src[i]), pick.map((i) => dst[i]));
+    if (!H) continue;
+    let count = 0;
+    for (let i = 0; i < n; i++) if (err(H, i) < threshold) count++;
+    if (count > bestCount) { bestCount = count; best = H; if (count > n * 0.9) break; }
+  }
+  if (!best) return null;
+  const inl = [];
+  for (let i = 0; i < n; i++) if (err(best, i) < threshold) inl.push(i);
+  const H = fitHomography(inl.map((i) => src[i]), inl.map((i) => dst[i])) || best;
+  return { H, inliers: inl.length };
+}

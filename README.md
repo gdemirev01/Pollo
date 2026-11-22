@@ -24,21 +24,21 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 - **Automatic placement**: when the camera comes on, hold your hands still where you want to play and the keyboard appears under them (with the front camera too). Press **Skip** to keep the last position instead. Turn it off with *Place keyboard under my hands when the camera first sees them*. With the camera in front of you the keyboard stays upright; in Table mode it faces the keys toward your wrists.
 - **Snap to hands**: press it, then rest your hands on the table where you want to play and hold still for about a second. The keyboard lands under your fingertips, lined up with them, sized to your hand span. It stays there: it only moves when you use **Move keys** or snap again.
 - **Angle it onto the table**: in **Move keys**, drag a corner to where the table's surface really is (or onto the corners of a paper keyboard). The keys are drawn and hit-tested in perspective. Drag inside to move, drag an edge to resize, **Rectangle** to straighten it out.
-- **Keep keyboard pinned to the table if the camera moves** (on by default): the app remembers what the table looks like around the keyboard and slides the keyboard along if the phone shifts or wobbles. Hands are left out of the comparison. It needs some texture to lock on to (wood grain, a cloth, a printed sheet); on a plain white table it says *Can't follow table*. It follows sliding, not rotating or zooming.
+- **Keep keyboard pinned to the table when the phone moves** (on by default): the app picks dozens of textured points on the table (away from your hands), follows each of them every frame, and works out how the table moved in the picture: sliding, turning, zooming or tilting. The keyboard moves with it, so it stays on the same spot of the table. When points leave the picture it picks up fresh ones. It needs some texture to lock on to (wood grain, a cloth, a printed sheet); on a plain white table it says *Can't follow table*. Sudden big jerks can lose it: hold the phone still for a moment and it picks the table up again.
 
 ### Using the back camera from above (Table mode)
 
-Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Table** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated, then **Move keys** to place the keyboard where your hands rest.
+Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Tap the table (camera above)** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated.
 
 ### Watching what the camera registers
 
 **Show tracking details** (on by default) draws a panel with a meter per finger for each hand in view:
 
-- the bar is the finger's current signal (Table: how far it's lifted; Tap: how far it's pushed down),
-- the solid line is where it arms/presses and the dotted line where it lands/releases,
+- the bar is how high the finger is above the table (its learned resting level),
+- the solid line is how high it has to be lifted for a tap to count, the dotted line is where it counts as touching the table,
 - grey = resting, amber = lifted and ready to strike, your accent colour = playing; the notes being held are listed beside it.
 
-A lifted fingertip also gets an amber ring on the video. If no hand is found for a moment, a message in the middle of the picture says so. Use **Tap sensitivity** to move the thresholds.
+A lifted fingertip also gets an amber ring on the video. If no hand is found for a moment, a message in the middle of the picture says so. **Tap sensitivity**: higher means smaller, gentler taps count.
 
 Settings and the keyboard position are saved in the browser. You can also play by touching or clicking the keys on screen. **Full screen** and keep-screen-awake help when it's propped up on a phone.
 
@@ -50,9 +50,9 @@ Settings and the keyboard position are saved in the browser. You can also play b
 
 | Mode | Gesture |
 | --- | --- |
-| **Tap** (default) | Hover your hands over the keys, then push **one finger down below the others**, like striking a key. Lift it back to release. The whole hand moving doesn't play anything; only a finger dropping relative to its neighbours. Thumbs are off by default (enable in settings). |
-| **Zone** | Any fingertip that enters a key plays it. Slide along the keys for a glissando. |
-| **Table** | Camera **above, looking down** (e.g. a phone's back camera on a stand). Rest your hands on the table, lift a finger and tap it back down: the note plays when it lands, on the key under that fingertip. Lifting the finger again lets go of the note. |
+| **Tap the table, camera in front** (default) | Rest your fingers on the table, lift one and tap it down. The note plays the moment it hits the table, on the key under that fingertip, and stops when you lift it. Each finger is measured against its own knuckle, so moving your whole hand doesn't play; a slow lowering doesn't play either (it needs a tap). If neighbouring fingers twitch along with a tap only the tapping finger plays, but real chords work. Thumbs are off by default. |
+| **Touch** (zone) | Any fingertip that enters a key plays it. Slide along the keys for a glissando. |
+| **Tap the table, camera above** | Same, with the phone above the table looking down. From above, a lifted finger is seen as the fingertip coming closer to the camera and the finger looking shorter. |
 
 - **Velocity**: strike faster for a louder note.
 - **Sustain pedal**: <kbd>Space</kbd> or the checkbox.
@@ -80,7 +80,8 @@ webcam ─► MediaPipe HandLandmarker (WASM + GPU) ─► landmarks (mirrored t
 - `src/homography.js` — perspective mapping between keyboard space and the four corners on screen.
 - `src/layout-editor.js` — moving, angling and resizing the keyboard's corners.
 - `src/snap.js` — waits for still hands and fits the keyboard under the fingertips.
-- `src/stabilizer.js` — follows the table if the camera shifts (masked, coarse-to-fine block matching).
+- `src/surface-tracker.js` — keeps the keyboard on the table when the phone moves: corner points, warped-patch matching, robust perspective fit, re-seeding.
+- `src/filters.js` — One Euro filter that smooths hand landmarks without lagging fast taps.
 - `src/settings.js` — defaults and saving to `localStorage`.
 - `src/synth.js` — additive piano voice: inharmonic partials that decay at different rates, a filtered noise "hammer", velocity-dependent brightness, convolution reverb, sustain pedal. Voices are keyed by finger, so two fingers on one key don't cut each other off.
 - `src/main.js` — camera selection, mirror/flip, render loop, touch play, edit mode, UI.

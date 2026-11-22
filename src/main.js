@@ -6,7 +6,9 @@ import { loadSettings, saveSettings, defaultQuad, DEFAULTS } from './settings.js
 import { grabAt, dragQuad, cursorFor, rectQuad, boundsOf, shiftQuad, isValidQuad } from './layout-editor.js';
 import { placement } from './homography.js';
 import { createSteadiness, snapQuad } from './snap.js';
-import { createStabilizer } from './stabilizer.js';
+import { createSurfaceTracker } from './surface-tracker.js';
+import { createHandSmoother } from './filters.js';
+import { apply as applyH } from './homography.js';
 
 const $ = (s) => document.querySelector(s);
 const video = $('#video');
@@ -34,8 +36,17 @@ const pointers = new Map(); // pointerId -> drag or play state
 function makeLayout() {
   return buildLayout({ startMidi: settings.startMidi, whiteCount: settings.whiteCount, x: 0, y: 0, width: 1, height: 1 });
 }
-let offset = { dx: 0, dy: 0 }; // how far the table has moved since the keyboard was placed
-const effQuad = () => shiftQuad(settings.quad, offset.dx, offset.dy);
+// How the table has moved in the picture since the keyboard was placed
+// (a perspective transform in pixels of the small tracking image), or null.
+let tableMotion = null;
+let lastGoodQuad = null;
+function effQuad() {
+  if (!tableMotion) return settings.quad;
+  const { H, w, h } = tableMotion;
+  const q = settings.quad.map(([x, y]) => { const p = applyH(H, x * w, y * h); return [p.x / w, p.y / h]; });
+  if (isValidQuad(q)) lastGoodQuad = q;
+  return lastGoodQuad || settings.quad;
+}
 let place = placement(effQuad());
 const updatePlacement = () => { place = placement(effQuad()); };
 function setStatus(t, cls = '') { const el = $('#status'); el.textContent = t; el.className = cls; }
@@ -92,15 +103,9 @@ function apply(key) {
     case 'mode':
     case 'useThumb':
     case 'sensitivity': {
-      const v = settings.sensitivity; // 1..10, higher = more sensitive
-      const press = 0.5 - v * 0.035;
-      const lift = 0.3 - v * 0.022;
+      const v = settings.sensitivity; // 1..10, higher = smaller, gentler taps count
       handle(detector.reset());
-      detector.setOptions({
-        mode: settings.mode, useThumb: settings.useThumb,
-        pressThreshold: press, releaseThreshold: press * 0.55,
-        liftThreshold: lift, landThreshold: lift * 0.4,
-      });
+      detector.setOptions({ mode: settings.mode, useThumb: settings.useThumb, scale: 1.6 - v * 0.12 });
       updateHint();
       break;
     }
@@ -111,14 +116,14 @@ function apply(key) {
       break;
     case 'quad':
       handle(detector.reset());
-      offset = { dx: 0, dy: 0 };
+      tableMotion = null; lastGoodQuad = null;
       updatePlacement();
       needReference = true;
       break;
     case 'anchor':
-      offset = { dx: 0, dy: 0 };
+      tableMotion = null; lastGoodQuad = null;
       updatePlacement();
-      stabilizer.clear();
+      surface.clear();
       needReference = settings.anchor;
       break;
     case 'volume': if (synth) synth.volume = settings.volume; break;
@@ -151,9 +156,9 @@ for (const el of document.querySelectorAll('[data-setting]')) {
 
 function updateHint() {
   $('#hint').textContent = {
-    tap: 'Tap: hold your hands over the keys and push one finger down below the others to play the key under it.',
+    tap: 'Camera in front of you. Rest your fingers on the table, lift one and tap it down: the note plays when it hits the table, on the key under that fingertip, and stops when you lift it.',
     zone: 'Touch: any fingertip that moves into a key plays it. Slide across keys to play each in turn.',
-    surface: 'Table: camera above, looking down. Rest your hands on the table, lift a finger and tap it back down. The note plays when it lands, on the key under that fingertip.',
+    surface: 'Camera above, looking down. Lift a finger and tap the table: the note plays when it lands, on the key under that fingertip, and stops when you lift it.',
   }[settings.mode];
 }
 
@@ -188,7 +193,7 @@ function setEditing(on) {
     if (snapping) endSnap();
     // Edit where the keyboard is right now (including any table-following shift).
     settings.quad = effQuad();
-    offset = { dx: 0, dy: 0 };
+    tableMotion = null; lastGoodQuad = null;
     updatePlacement();
   } else if (editing) {
     save();
@@ -451,15 +456,15 @@ window.addEventListener('keyup', (e) => {
   heldExtra.delete(`kbd${midi}`);
 });
 
-// ---------- keep the keyboard on the table if the camera moves ----------
-const stabilizer = createStabilizer({ search: 12 });
+// ---------- keep the keyboard on the table if the phone moves ----------
+const surface = createSurfaceTracker();
 let needReference = true;
-let follow = { ok: false, lastGood: 0, frame: 0 };
+let follow = { ok: false, lastGood: 0 };
 const work = document.createElement('canvas');
 const wctx = work.getContext('2d', { willReadFrequently: true });
 
 function grabTable() {
-  const w = 160;
+  const w = 320;
   const h = Math.max(4, Math.round((w * video.videoHeight) / video.videoWidth) & ~1);
   if (work.width !== w || work.height !== h) { work.width = w; work.height = h; }
   const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
@@ -468,7 +473,7 @@ function grabTable() {
   const d = wctx.getImageData(0, 0, w, h).data;
   const gray = new Float32Array(w * h);
   for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
-  // Hands move on their own: leave them out of the comparison.
+  // Hands move on their own: leave them out.
   const mask = new Uint8Array(w * h);
   for (const hand of hands) {
     const xs = hand.landmarks.map((p) => p.x), ys = hand.landmarks.map((p) => p.y);
@@ -483,28 +488,27 @@ function grabTable() {
 
 function followTable(now) {
   if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
+  const { gray, mask, w, h } = grabTable();
   if (needReference) {
-    const { gray, mask, w, h } = grabTable();
-    stabilizer.setReference(gray, mask, w, h);
+    surface.setReference(gray, mask, w, h);
     needReference = false;
-    follow = { ok: true, lastGood: now, frame: 0 };
+    tableMotion = null; lastGoodQuad = null;
+    follow = { ok: surface.features >= 12, lastGood: now };
     return;
   }
-  if (++follow.frame % 2) return; // every other frame is plenty
-  const { gray, mask, w, h } = grabTable();
-  const r = stabilizer.track(gray, mask, w, h);
-  if (r.confidence > 0.2) {
-    const tx = r.dx / w, ty = r.dy / h;
-    offset = { dx: offset.dx * 0.5 + tx * 0.5, dy: offset.dy * 0.5 + ty * 0.5 };
+  const r = surface.track(gray, mask, w, h);
+  if (r.ok) {
+    tableMotion = { H: r.H, w, h };
     updatePlacement();
     follow.lastGood = now;
     follow.ok = true;
-  } else if (now - follow.lastGood > 1500) {
+  } else if (now - follow.lastGood > 1000) {
     follow.ok = false;
   }
 }
 
 // ---------- loop ----------
+const smoother = createHandSmoother();
 let lastVideoTime = -1;
 let fps = 0, lastFrame = performance.now();
 
@@ -513,7 +517,7 @@ function frame(now) {
   if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     try {
-      hands = tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) }));
+      hands = smoother.smooth(tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) })), now / 1000);
       if (snapping) { snapStep(now); active = new Map(); }
       else if (!editing) {
         followTable(now);
@@ -793,4 +797,4 @@ fitStage();
 requestAnimationFrame(frame);
 
 // Exposed for debugging in the browser console.
-window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get offset() { return offset; }, toScreen: (u, v) => place.toScreen(u, v) };
+window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get tableMotion() { return tableMotion; }, get follow() { return follow; }, effQuad, toScreen: (u, v) => place.toScreen(u, v) };

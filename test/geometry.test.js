@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { placement } from '../src/homography.js';
 import { grabAt, dragQuad, isValidQuad, rectQuad } from '../src/layout-editor.js';
 import { snapQuad, createSteadiness } from '../src/snap.js';
-import { createStabilizer } from '../src/stabilizer.js';
 
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`);
 
@@ -101,53 +100,4 @@ test('steadiness: progress builds while still and resets on movement', () => {
   close(s.add(0.5, { a: { x: 0.505, y: 0.5 } }), 0.5);
   assert.equal(s.add(0.6, { a: { x: 0.6, y: 0.5 } }), 0);
   assert.equal(s.add(1.7, { a: { x: 0.6, y: 0.5 } }), 1);
-});
-
-// Smooth random texture, like a wood or fabric table seen small.
-function texture(w, h, seed = 1) {
-  let r = seed;
-  const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
-  const coarse = Array.from({ length: 40 * 30 }, rnd);
-  const img = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const gx = (x / w) * 39, gy = (y / h) * 29, ix = Math.floor(gx), iy = Math.floor(gy), fx = gx - ix, fy = gy - iy;
-    const v = (i, j) => coarse[j * 40 + i];
-    img[y * w + x] = 255 * ((1 - fx) * (1 - fy) * v(ix, iy) + fx * (1 - fy) * v(ix + 1, iy) + (1 - fx) * fy * v(ix, iy + 1) + fx * fy * v(ix + 1, iy + 1));
-  }
-  return img;
-}
-function shifted(img, w, h, dx, dy) {
-  const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const sx = Math.min(w - 1, Math.max(0, x - dx)), sy = Math.min(h - 1, Math.max(0, y - dy));
-    out[y * w + x] = img[sy * w + sx];
-  }
-  return out;
-}
-
-test('stabilizer finds how far the table moved, ignoring masked hands', () => {
-  const w = 160, h = 120;
-  const ref = texture(w, h);
-  const cur = shifted(ref, w, h, 7, -5);
-  // A "hand" covering part of the current frame with different content.
-  const mask = new Uint8Array(w * h);
-  for (let y = 40; y < 90; y++) for (let x = 60; x < 110; x++) { mask[y * w + x] = 1; cur[y * w + x] = 255; }
-  const s = createStabilizer();
-  s.setReference(ref, new Uint8Array(w * h), w, h);
-  const r = s.track(cur, mask, w, h);
-  assert.equal(r.dx, 7);
-  assert.equal(r.dy, -5);
-  assert.ok(r.confidence > 0.5, `confidence ${r.confidence}`);
-});
-
-test('stabilizer reports low confidence on a plain surface', () => {
-  const w = 160, h = 120;
-  // Same plain surface in two frames, each with its own faint sensor noise.
-  let r = 7;
-  const noise = () => ((r = (r * 16807) % 2147483647) / 2147483647) * 3;
-  const frame = () => Float32Array.from({ length: w * h }, () => 128 + noise());
-  const s = createStabilizer();
-  s.setReference(frame(), new Uint8Array(w * h), w, h);
-  const c = s.track(frame(), new Uint8Array(w * h), w, h).confidence;
-  assert.ok(c < 0.3, `confidence ${c}`);
 });
