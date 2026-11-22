@@ -88,3 +88,21 @@ test('says it is lost on a plain surface', () => {
   t.setReference(plain(), null, W, H);
   assert.equal(t.track(plain(), null, W, H).ok, false);
 });
+
+test('does not chase a small moving object on an otherwise plain table', () => {
+  // Plain surface with faint noise, plus a small textured card that slides around.
+  let r = 11;
+  const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
+  const card = Array.from({ length: 40 * 40 }, () => rnd() * 255);
+  const frame = (cx, cy) => {
+    const img = Float32Array.from({ length: W * H }, () => 128 + rnd() * 3);
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) img[(cy + y) * W + cx + x] = card[y * 40 + x];
+    return img;
+  };
+  const t = createSurfaceTracker();
+  t.setReference(frame(100, 100), null, W, H);
+  for (let i = 1; i <= 8; i++) {
+    const out = t.track(frame(100 + i * 4, 100 + i * 2), null, W, H);
+    assert.equal(out.ok, false, `followed the card at step ${i}`);
+  }
+});

@@ -38,7 +38,6 @@ function findCorners(img, w, h, mask, max, border) {
     Ixx[i] = gx * gx; Iyy[i] = gy * gy; Ixy[i] = gx * gy;
   }
   const cell = 16, pts = [];
-  let top = 0;
   const resp = new Float32Array(w * h);
   for (let y = border; y < h - border; y++) for (let x = border; x < w - border; x++) {
     let a = 0, b = 0, c = 0;
@@ -46,18 +45,26 @@ function findCorners(img, w, h, mask, max, border) {
       const j = (y + dy) * w + x + dx;
       a += Ixx[j]; b += Iyy[j]; c += Ixy[j];
     }
-    const r = a * b - c * c - 0.05 * (a + b) * (a + b);
-    resp[y * w + x] = r;
-    if (r > top) top = r;
+    resp[y * w + x] = a * b - c * c - 0.05 * (a + b) * (a + b);
   }
+  // Stay a few pixels clear of the hands: their edges make strong, moving "corners".
+  const nearMask = (x, y) => mask && (mask[y * w + x] || mask[y * w + Math.max(0, x - 4)] || mask[y * w + Math.min(w - 1, x + 4)] ||
+    mask[Math.max(0, y - 4) * w + x] || mask[Math.min(h - 1, y + 4) * w + x]);
   for (let cy = border; cy < h - border; cy += cell) for (let cx = border; cx < w - border; cx += cell) {
     let best = 0, bx = -1, by = -1;
     for (let y = cy; y < Math.min(cy + cell, h - border); y++) for (let x = cx; x < Math.min(cx + cell, w - border); x++) {
       const r = resp[y * w + x];
-      if (r > best && !(mask && mask[y * w + x])) { best = r; bx = x; by = y; }
+      if (r > best && !nearMask(x, y)) { best = r; bx = x; by = y; }
     }
-    if (bx >= 0 && best > top * 0.01) pts.push({ x: bx, y: by, r: best });
+    if (bx >= 0) pts.push({ x: bx, y: by, r: best });
   }
+  // Keep cells whose best corner is reasonably strong compared with a typical cell,
+  // so one extreme corner (glare, an edge) doesn't make the rest of the table look weak.
+  const sorted = pts.map((p) => p.r).sort((a, b) => a - b);
+  const typical = sorted[Math.floor(sorted.length * 0.75)] || 0;
+  const strong = pts.filter((p) => p.r > Math.max(1e-3, typical * 0.05));
+  pts.length = 0;
+  pts.push(...strong);
   pts.sort((p, q) => q.r - p.r);
   return pts.slice(0, max).map(({ x, y }) => ({ x, y }));
 }
@@ -123,7 +130,23 @@ function sane(H, w, h) {
   return ratio > 0.25 && ratio < 4;
 }
 
-export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch = 14, minInliers = 10 } = {}) {
+/** Share of the image covered by the bounding box of these points. */
+function spread(pts, w, h) {
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  return ((Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys))) / (w * h);
+}
+
+/** Largest distance any image corner moves between two transforms. */
+function cornerJump(A, B, w, h) {
+  let m = 0;
+  for (const [x, y] of [[0, 0], [w, 0], [w, h], [0, h]]) {
+    const a = apply(A, x, y), b = apply(B, x, y);
+    m = Math.max(m, Math.hypot(a.x - b.x, a.y - b.y));
+  }
+  return m;
+}
+
+export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch = 14, minInliers = 15, minSpread = 0.12, minFeatures = 20 } = {}) {
   let ref = null; // { full, half, features }
   let H = IDENTITY; // reference frame -> current frame
   let base = IDENTITY; // original placement frame -> reference frame
@@ -174,8 +197,16 @@ export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch 
         dst.push(subpixel(gray, w, h, f, tf));
       }
 
+      if (ref.features.length < minFeatures) { lost++; return { H: multiply(H, base), ok: false, inliers: 0 }; }
       const fit = src.length >= 8 ? ransacHomography(src, dst, { threshold: 2 }) : null;
-      if (fit && fit.inliers >= Math.max(minInliers, src.length * 0.3) && sane(fit.H, w, h)) {
+      let good = !!fit && fit.inliers >= Math.max(minInliers, src.length * 0.3) && sane(fit.H, w, h);
+      if (good) {
+        // The agreeing points must be spread over the picture (not one object moving),
+        // and the view can't jump further than a phone plausibly moves in one frame.
+        const inl = dst.filter((q, i) => { const p = apply(fit.H, src[i].x, src[i].y); return Math.hypot(p.x - q.x, p.y - q.y) < 2; });
+        good = spread(inl, w, h) >= minSpread && cornerJump(fit.H, H, w, h) <= (lost ? 0.45 : 0.25) * w;
+      }
+      if (good) {
         H = fit.H;
         lost = 0;
         lastInliers = fit.inliers;
