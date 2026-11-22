@@ -16,12 +16,17 @@
     </header>
 
     <div class="body">
-      <section class="stage-wrap" id="stageWrap">
+      <section class="stage-wrap">
+        <div class="stage-box" id="stageWrap">
         <div class="stage" id="stage">
           <video id="video" playsinline muted></video>
           <canvas id="canvas" aria-label="Camera view with piano keyboard"></canvas>
 
           <div class="toolbar">
+            <button class="tool" id="snapBtn" title="Place the keyboard under your hands">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z"/><path d="M6 8h4M14 8h4"/></svg>
+              <span>Snap to hands</span>
+            </button>
             <button class="tool" id="editBtn" aria-pressed="false" title="Move and resize the keyboard">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M12 2l-3 3M12 2l3 3M12 22l-3-3M12 22l3-3M2 12l3-3M2 12l3 3M22 12l-3-3M22 12l-3 3"/></svg>
               <span>Move keys</span>
@@ -40,26 +45,35 @@
             </button>
           </div>
 
-          <div class="edit-banner" id="editBanner" hidden>
-            <p>Drag to move. Drag an edge or corner to resize.</p>
-            <div class="row">
-              <button class="ghost" id="resetKb">Reset</button>
-              <button id="doneEdit">Done</button>
-            </div>
-          </div>
-
           <div id="overlay">
             <div class="card">
               <h2>Play piano with your hands</h2>
               <ol class="steps">
                 <li>Prop your phone, tablet or laptop on the table with the front camera facing you. Or mount a phone above the table, back camera looking down, and pick <b>Table</b> mode in Settings.</li>
                 <li>Hold your hands over the table so the camera sees your fingers.</li>
-                <li>Tap <b>Move keys</b> to drag and resize the keyboard to where your hands are.</li>
+                <li>Tap <b>Snap to hands</b> and rest your hands on the table: the keyboard lands under your fingers. Use <b>Move keys</b> to fine-tune it, or drag its corners to match the table's angle.</li>
               </ol>
               <p class="muted" id="overlay-msg">Video stays on your device. Hand tracking runs in the browser.</p>
               <button id="start">Start</button>
             </div>
           </div>
+        </div>
+        </div>
+        <div class="edit-banner" id="editBanner" hidden>
+          <p>Drag inside to move. Drag a corner onto the table to angle it. Drag an edge to resize.</p>
+          <div class="row">
+            <button class="ghost" id="squareKb">Rectangle</button>
+            <button class="ghost" id="resetKb">Reset</button>
+            <button id="doneEdit">Done</button>
+          </div>
+        </div>
+
+        <div class="edit-banner snap" id="snapBanner" hidden>
+          <div class="snap-body">
+            <p id="snapText">Rest your hands on the table where you want to play, and hold still.</p>
+            <div class="progress"><div id="snapBar"></div></div>
+          </div>
+          <button class="ghost" id="snapCancel">Cancel</button>
         </div>
       </section>
 
@@ -108,9 +122,12 @@
             <input id="accent" data-setting="accent" type="color" /> Pressed key colour
           </label>
           <div class="row">
-            <button class="ghost" id="editBtn2">Move / resize keys</button>
+            <button class="ghost" id="snapBtn2">Snap to hands</button>
+            <button class="ghost" id="editBtn2">Move / angle keys</button>
+            <button class="ghost" id="squareKb2">Make rectangular</button>
             <button class="ghost" id="resetKb2">Reset position</button>
           </div>
+          <label class="check" for="anchor"><input id="anchor" data-setting="anchor" type="checkbox" /> Keep keyboard pinned to the table if the camera moves</label>
         </fieldset>
 
         <fieldset>

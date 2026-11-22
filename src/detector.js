@@ -44,8 +44,10 @@ export function createDetector(opts = {}) {
    * @param hands Array<{ id, landmarks: Array<{x, y, z?}> }> in display coordinates
    * @param layout keyboard layout from buildLayout
    * @param t time in seconds
+   * @param toLocal maps a screen point into the layout's coordinates (for a
+   *   keyboard placed in perspective); identity when the layout is on screen
    */
-  function update(hands, layout, t) {
+  function update(hands, layout, t, toLocal = (x, y) => ({ x, y })) {
     const events = [];
     const seen = new Set();
 
@@ -83,7 +85,8 @@ export function createDetector(opts = {}) {
         } else if (cfg.mode === 'zone') {
           const top = layout.bounds.y;
           const margin = st.key ? -cfg.zoneMargin : cfg.zoneMargin;
-          target = st.sy >= top + margin ? hitTest(layout, st.sx, Math.max(st.sy, top + 1e-6)) : null;
+          const l = toLocal(st.sx, st.sy);
+          target = l.y >= top + margin ? hitTest(layout, l.x, Math.max(l.y, top + 1e-6)) : null;
           st.signal = target ? 1 : 0;
         } else if (cfg.mode === 'surface') {
           // Lift score from two cues, each against this finger's learned table level.
@@ -103,7 +106,8 @@ export function createDetector(opts = {}) {
             target = null; // lifting a finger lets go of its note
           } else if (st.armed && st.signal < cfg.landThreshold) {
             st.armed = false;
-            target = hitTest(layout, st.sx, st.sy);
+            const l = toLocal(st.sx, st.sy);
+            target = hitTest(layout, l.x, l.y);
             const landSpeed = Math.max(0, st.prevSignal - st.signal) / dt;
             velocity = Math.max(0.35, Math.min(1, 0.35 + landSpeed / 4));
           }
@@ -112,7 +116,7 @@ export function createDetector(opts = {}) {
           const others = tips.filter((_, j) => j !== f && j !== 0);
           const ref = others.reduce((s, p) => s + p.y, 0) / others.length;
           st.signal = (st.sy - ref) / size;
-          if (!st.key && st.signal > cfg.pressThreshold) target = keyAtX(layout, st.sx, st.sy);
+          if (!st.key && st.signal > cfg.pressThreshold) { const l = toLocal(st.sx, st.sy); target = keyAtX(layout, l.x, l.y); }
           else if (st.key && st.signal < cfg.releaseThreshold) target = null;
         }
 
