@@ -32,6 +32,7 @@ h1 span { color: var(--accent); font-weight: 400; }
 #status { color: var(--muted); font-size: 14px; min-width: 0; }
 #status.ok { color: var(--ok); }
 #status.err { color: var(--danger); }
+#build { color: var(--muted); font-size: 11px; opacity: 0.7; }
 #fps { margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 
 .body { flex: 1; min-height: 0; display: flex; gap: 16px;
