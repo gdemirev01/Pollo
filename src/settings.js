@@ -9,7 +9,12 @@ export const DEFAULTS = Object.freeze({
   whiteCount: 14,
   quad: [[0.03, 0.6], [0.97, 0.6], [0.97, 0.94], [0.03, 0.94]], // keyboard corners: TL, TR, BR, BL
   anchor: true,
-  autoSnap: true, // place the keyboard under the hands when they're first seen
+  autoSnap: true,
+  calibration: {},
+  look3d: true, // keys drawn as 3D blocks standing on the table
+  keyHeight: 1, // 1 = real piano proportions
+  fov: 65, // camera angle of view across the picture's long side, degrees
+  occlusion: true, // draw the hands in front of the keys // tap calibration per mode ('tap', 'surface'), from calibrate.js // place the keyboard under the hands when they're first seen
   camera: 'facing:user',
   mirror: true,
   flip: false,

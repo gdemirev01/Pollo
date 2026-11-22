@@ -8,6 +8,8 @@ import { placement } from './homography.js';
 import { createSteadiness, snapQuad } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
+import { createCalibrator } from './calibrate.js';
+import { poseFromQuad, keyBoxes, keyboardSize, boxFaces, WHITE_HEIGHT_CM, BLACK_EXTRA_CM } from './ar.js';
 import { apply as applyH } from './homography.js';
 
 const $ = (s) => document.querySelector(s);
@@ -15,7 +17,7 @@ const video = $('#video');
 const canvas = $('#canvas');
 const stage = $('#stage');
 const stageWrap = $('#stageWrap');
-const g = canvas.getContext('2d');
+let g = canvas.getContext('2d'); // reassigned briefly while drawing the 3D piano layer
 
 const settings = loadSettings();
 let layout = makeLayout();
@@ -79,6 +81,8 @@ const fmt = {
   opacity: (v) => `${Math.round(v * 100)}%`,
   volume: (v) => `${Math.round(v * 100)}%`,
   reverb: (v) => `${Math.round((v / 0.6) * 100)}%`,
+  keyHeight: (v) => `${v.toFixed(1)}×`,
+  fov: (v) => `${v}°`,
 };
 
 function readControl(el) {
@@ -105,7 +109,11 @@ function apply(key) {
     case 'sensitivity': {
       const v = settings.sensitivity; // 1..10, higher = smaller, gentler taps count
       handle(detector.reset());
-      detector.setOptions({ mode: settings.mode, useThumb: settings.useThumb, scale: 1.6 - v * 0.12 });
+      detector.setOptions({
+        mode: settings.mode, useThumb: settings.useThumb, scale: 1.6 - v * 0.12,
+        calibration: settings.calibration?.[settings.mode] || null,
+      });
+      showCalState();
       updateHint();
       break;
     }
@@ -263,6 +271,74 @@ function snapStep(now) {
 $('#snapBtn').addEventListener('click', startSnap);
 $('#snapBtn2').addEventListener('click', startSnap);
 $('#snapCancel').addEventListener('click', () => endSnap());
+
+// ---------- tap calibration ----------
+const CAL_SECONDS = 8;
+let calibrating = null; // { cal, seen, last }
+const FINGER_LABELS = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+
+function showCalState() {
+  const el = $('#calState');
+  if (settings.mode === 'zone') { el.textContent = 'Touch mode needs no calibration.'; return; }
+  el.textContent = settings.calibration?.[settings.mode]
+    ? 'Taps are calibrated for this camera setup.'
+    : 'Not calibrated. If taps don\'t register well, calibrate: it learns how your taps look from this camera angle.';
+}
+
+function startCalibration() {
+  if (!tracker) { setStatus('Start the camera first, then calibrate your taps.', 'err'); return; }
+  if (settings.mode === 'zone') { setStatus('Touch mode needs no calibration. Pick a Tap the table mode first.', 'err'); return; }
+  if (editing) setEditing(false);
+  if (snapping) endSnap();
+  handle(detector.reset());
+  calibrating = { cal: createCalibrator(), seen: 0, last: null };
+  $('#calBanner').hidden = false;
+  document.body.classList.add('editing');
+  $('#calBar').style.width = '0%';
+  $('#calText').textContent = 'Rest your hands on the table, then tap each finger a few times, one at a time, like slow notes.';
+  if (narrow.matches) setPanel(false);
+}
+function endCalibration(message, cls = 'ok') {
+  calibrating = null;
+  $('#calBanner').hidden = true;
+  document.body.classList.remove('editing');
+  if (message) setStatus(message, cls);
+}
+function calibrationStep(now) {
+  const t = now / 1000;
+  if (hands.length) {
+    calibrating.cal.add(hands);
+    if (calibrating.last !== null) calibrating.seen += Math.min(0.2, t - calibrating.last);
+  }
+  calibrating.last = t;
+  const p = Math.min(1, calibrating.seen / CAL_SECONDS);
+  $('#calBar').style.width = `${Math.round(p * 100)}%`;
+  $('#calText').textContent = hands.length
+    ? `Tap each finger a few times, one at a time… ${Math.ceil(CAL_SECONDS - calibrating.seen)} s`
+    : 'Show your hands on the table to continue.';
+  if (p < 1) return;
+  const result = calibrating.cal.result();
+  if (!result) {
+    endCalibration(hands.length || calibrating?.seen
+      ? "Didn't see clear taps. Calibrate again and lift each finger a little higher before tapping it down."
+      : "Calibration didn't get enough of your hands. Try again with your hands in view.", 'err');
+    return;
+  }
+  settings.calibration = { ...settings.calibration, [settings.mode]: result };
+  save();
+  apply('mode');
+  const first = Object.values(result.hands)[0];
+  const counts = first.taps.slice(1).map((n, i) => `${FINGER_LABELS[i + 1]} ${n}`).join(', ');
+  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.`);
+}
+$('#calBtn').addEventListener('click', startCalibration);
+$('#calBtn2').addEventListener('click', startCalibration);
+$('#calCancel').addEventListener('click', () => endCalibration());
+$('#calClear').addEventListener('click', () => {
+  const c = { ...settings.calibration }; delete c[settings.mode];
+  settings.calibration = c; save(); apply('mode');
+  setStatus('Calibration cleared for this mode.', 'ok');
+});
 
 const fsTarget = document.documentElement;
 if (!fsTarget.requestFullscreen && !fsTarget.webkitRequestFullscreen) $('#fullBtn').hidden = true;
@@ -486,8 +562,11 @@ function grabTable() {
   return { gray, mask, w, h };
 }
 
+let followSkip = 0;
 function followTable(now) {
   if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
+  // On a slow phone, follow the table every other frame to leave time for hand tracking.
+  if (!needReference && fps < 22 && followSkip++ % 2) return;
   const { gray, mask, w, h } = grabTable();
   if (needReference) {
     surface.setReference(gray, mask, w, h);
@@ -518,7 +597,8 @@ function frame(now) {
     lastVideoTime = video.currentTime;
     try {
       hands = smoother.smooth(tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) })), now / 1000);
-      if (snapping) { snapStep(now); active = new Map(); }
+      if (calibrating) { calibrationStep(now); active = new Map(); }
+      else if (snapping) { snapStep(now); active = new Map(); }
       else if (!editing) {
         followTable(now);
         const res = detector.update(hands, layout, now / 1000, place.toLocal);
@@ -559,7 +639,7 @@ function draw(now) {
     const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1);
     const sy = settings.flip ? -1 : 1;
     g.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
-    g.globalAlpha = 0.85;
+    g.globalAlpha = settings.look3d ? 1 : 0.85;
     g.drawImage(video, 0, 0, W, H);
     g.globalAlpha = 1;
     g.setTransform(1, 0, 0, 1, 0, 0);
@@ -600,8 +680,11 @@ function draw(now) {
       g.fillText(k.black ? k.name.replace(/\d/, '') : k.name, lx, ly);
     }
   };
-  layout.keys.filter((k) => !k.black).forEach(drawKey);
-  layout.keys.filter((k) => k.black).forEach(drawKey);
+  if (!(settings.look3d && drawKeys3D(now, W, H, dpr, pressed))) {
+    layout.keys.filter((k) => !k.black).forEach(drawKey);
+    layout.keys.filter((k) => k.black).forEach(drawKey);
+  }
+  if (settings.occlusion && settings.look3d && hands.length && video.readyState >= 2) drawHandsOver(W, H);
 
   if (editing) drawEditFrame(W, H, dpr);
   else if (settings.anchor && tracker && !snapping && !settings.tracking) drawFollowBadge(W, H, dpr);
@@ -639,6 +722,123 @@ function draw(now) {
   $('#fps').textContent = tracker ? `${hands.length} hand${hands.length === 1 ? '' : 's'} · ${fps.toFixed(0)} fps` : '';
 }
 
+// ---------- 3D keys on the table ----------
+const KEY_COLORS = {
+  white: { top: '#f3f0e8', front: '#c6c0b3', left: '#d9d4ca', right: '#d9d4ca', back: '#b8b2a6' },
+  black: { top: '#30303a', front: '#121216', left: '#1b1b21', right: '#1b1b21', back: '#101014' },
+  case: { top: '#2a2a33', front: '#1a1a20', left: '#16161b', right: '#16161b', back: '#121217' },
+};
+function shade(hex, k) { // k < 0 darker, > 0 lighter
+  const n = parseInt(hex.slice(1), 16);
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function polyPath(pts) { g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath(); }
+
+// The piano is drawn solid on its own layer, then laid over the video with the
+// chosen opacity, so keys never show through each other.
+const pianoLayer = document.createElement('canvas');
+function drawKeys3D(now, W, H, dpr, pressed) {
+  const size = keyboardSize(settings.whiteCount);
+  const pose = poseFromQuad(effQuad().map(([x, y]) => [x * W, y * H]), W, H, settings.fov, size);
+  if (!pose) return false;
+  if (pianoLayer.width !== W || pianoLayer.height !== H) { pianoLayer.width = W; pianoLayer.height = H; }
+  const main = g;
+  g = pianoLayer.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, W, H);
+  try { drawPiano(now, dpr, pose, size, pressed); } finally { g = main; }
+  g.save();
+  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8));
+  g.drawImage(pianoLayer, 0, 0);
+  g.restore();
+  return true;
+}
+function drawPiano(now, dpr, pose, size, pressed) {
+  const hs = settings.keyHeight;
+  const P = (X, Y, Z) => pose.project(X, Y, Z);
+  g.save();
+
+  // Soft shadow on the table under the whole keyboard.
+  const caseH = (WHITE_HEIGHT_CM + BLACK_EXTRA_CM + 0.8) * hs;
+  const foot = [P(-0.8, -3.4, 0), P(size.w + 0.8, -3.4, 0), P(size.w + 0.8, size.d + 0.6, 0), P(-0.8, size.d + 0.6, 0)];
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 22 * dpr; g.shadowOffsetY = 6 * dpr;
+  polyPath(foot); g.fillStyle = 'rgba(0,0,0,0.38)'; g.fill();
+  g.restore();
+
+  // Case: a back panel behind the keys and thin cheeks at both ends.
+  const caseBoxes = [
+    boxFaces(pose, -0.8, size.w + 0.8, -3.4, 0, 0, caseH),
+    boxFaces(pose, -0.8, 0, 0, size.d * 0.98, 0, WHITE_HEIGHT_CM * hs + 0.4 * hs),
+    boxFaces(pose, size.w, size.w + 0.8, 0, size.d * 0.98, 0, WHITE_HEIGHT_CM * hs + 0.4 * hs),
+  ];
+  for (const faces of caseBoxes) for (const fc of faces) { polyPath(fc.pts); g.fillStyle = KEY_COLORS.case[fc.name]; g.fill(); }
+
+  const accentDark = shade(settings.accent, -0.35);
+  for (const b of keyBoxes(pose, layout, size, pressed, hs)) {
+    const flash = Math.max(0, 1 - (now - (flashes.get(b.key.midi) ?? -1e9)) / 250);
+    const pal = KEY_COLORS[b.key.black ? 'black' : 'white'];
+    for (const fc of b.faces) {
+      polyPath(fc.pts);
+      if (b.down) g.fillStyle = fc.name === 'top' ? settings.accent : accentDark;
+      else g.fillStyle = flash > 0 && fc.name === 'top' ? shade(pal.top, b.key.black ? 0.25 * flash : -0.08 * flash) : pal[fc.name];
+      g.fill();
+      g.strokeStyle = b.key.black ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)';
+      g.lineWidth = 1;
+      g.stroke();
+    }
+    const showLabel = settings.labels === 'all' || (settings.labels === 'c' && b.key.name[0] === 'C' && !b.key.black);
+    if (showLabel) {
+      const t = b.faces.find((fc) => fc.name === 'top').pts;
+      const near = { x: (t[2].x + t[3].x) / 2, y: (t[2].y + t[3].y) / 2 }, far = { x: (t[0].x + t[1].x) / 2, y: (t[0].y + t[1].y) / 2 };
+      const at = { x: near.x + (far.x - near.x) * 0.14, y: near.y + (far.y - near.y) * 0.14 };
+      const w = Math.hypot(t[2].x - t[3].x, t[2].y - t[3].y);
+      g.font = `600 ${Math.max(8 * dpr, Math.min(w * 0.42, 16 * dpr))}px system-ui, sans-serif`;
+      g.textAlign = 'center';
+      g.fillStyle = b.key.black ? 'rgba(255,255,255,0.75)' : 'rgba(40,36,30,0.6)';
+      g.fillText(b.key.black ? b.key.name.replace(/\d/, '') : b.key.name, at.x, at.y);
+    }
+  }
+  g.restore();
+}
+
+// Cut the hands out of the camera picture and draw them over the keys, so
+// fingers sit on top of the keys instead of behind them.
+const handLayer = document.createElement('canvas');
+const hctx = handLayer.getContext('2d');
+function drawHandsOver(W, H) {
+  if (handLayer.width !== W || handLayer.height !== H) { handLayer.width = W; handLayer.height = H; }
+  hctx.setTransform(1, 0, 0, 1, 0, 0);
+  hctx.globalCompositeOperation = 'source-over';
+  hctx.clearRect(0, 0, W, H);
+  hctx.filter = 'blur(2px)'; // soft edge
+  hctx.strokeStyle = hctx.fillStyle = '#fff';
+  hctx.lineCap = hctx.lineJoin = 'round';
+  for (const hand of hands) {
+    const lm = hand.landmarks.map((p) => ({ x: p.x * W, y: p.y * H }));
+    const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
+    hctx.beginPath();
+    [0, 1, 2, 5, 9, 13, 17].forEach((i, k) => (k ? hctx.lineTo(lm[i].x, lm[i].y) : hctx.moveTo(lm[i].x, lm[i].y)));
+    hctx.closePath();
+    hctx.fill();
+    hctx.lineWidth = size * 0.34;
+    hctx.stroke();
+    hctx.lineWidth = size * 0.27; // finger thickness
+    hctx.beginPath();
+    for (const [a, b] of CONNECTIONS) { hctx.moveTo(lm[a].x, lm[a].y); hctx.lineTo(lm[b].x, lm[b].y); }
+    hctx.stroke();
+  }
+  hctx.filter = 'none';
+  hctx.globalCompositeOperation = 'source-in';
+  const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
+  hctx.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
+  hctx.drawImage(video, 0, 0, W, H);
+  hctx.setTransform(1, 0, 0, 1, 0, 0);
+  hctx.globalCompositeOperation = 'source-over';
+  g.drawImage(handLayer, 0, 0);
+}
+
 // ---------- tracking details: what the camera registers, finger by finger ----------
 const STATE_COLORS = { idle: 'rgba(235,237,243,0.55)', armed: '#fbbf24', off: 'rgba(150,150,150,0.3)' };
 const SHORT = ['T', 'I', 'M', 'R', 'P'];
@@ -673,11 +873,11 @@ function drawTracking(now, W, H, dpr) {
   const scaleMax = settings.mode === 'zone' ? 1 : th.on * 2;
   const rows = [...hands].sort((a, b) => a.landmarks[0].x - b.landmarks[0].x);
   const barW = 14 * dpr, gap = 6 * dpr, barH = 40 * dpr, pad = 10 * dpr;
-  const panelW = pad * 2 + 5 * barW + 4 * gap + 58 * dpr;
+  const panelW = Math.max(pad * 2 + 5 * barW + 4 * gap + 58 * dpr, pad * 2 + 196 * dpr);
   const rowH = barH + 30 * dpr;
-  const footer = settings.anchor ? 22 * dpr : 0;
+  const footer = 22 * dpr;
   const panelH = pad + rows.length * rowH + footer;
-  const px = 10 * dpr, py = 10 * dpr;
+  const px = 10 * dpr, py = 62 * dpr; // below the toolbar
   g.fillStyle = 'rgba(15,17,23,0.78)';
   roundRect(px, py, panelW, panelH, 10 * dpr, true); g.fill();
 
@@ -716,12 +916,27 @@ function drawTracking(now, W, H, dpr) {
     g.textAlign = 'left'; g.font = font(12, 600); g.fillStyle = settings.accent;
     g.fillText(held.join(' '), bx0 + 5 * (barW + gap) + 4 * dpr, by0 + barH / 2 + 4 * dpr);
   });
-  if (footer) {
+  {
     const fy = py + pad + rows.length * rowH + 6 * dpr;
-    g.beginPath(); g.arc(px + pad + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
-    g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
-    g.textAlign = 'left'; g.font = font(11); g.fillStyle = '#ebedf3';
-    g.fillText(follow.ok ? 'Pinned to table' : "Can't follow table", px + pad + 14 * dpr, fy + 4 * dpr);
+    let x = px + pad;
+    g.textAlign = 'left'; g.font = font(11);
+    g.fillStyle = fps < 15 ? '#fbbf24' : '#9aa1b4';
+    const f = `${Math.round(fps)} fps`;
+    g.fillText(f, x, fy + 4 * dpr);
+    x += g.measureText(f).width + 8 * dpr;
+    if (settings.mode !== 'zone') {
+      const cal = !!detector.config.calibration;
+      g.fillStyle = cal ? '#9aa1b4' : '#fbbf24';
+      const c = cal ? 'calibrated' : 'not calibrated';
+      g.fillText(c, x, fy + 4 * dpr);
+      x += g.measureText(c).width + 8 * dpr;
+    }
+    if (settings.anchor) {
+      g.beginPath(); g.arc(x + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
+      g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
+      g.fillStyle = '#ebedf3';
+      g.fillText(follow.ok ? 'pinned' : 'not pinned', x + 12 * dpr, fy + 4 * dpr);
+    }
   }
 }
 
