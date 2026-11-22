@@ -25,8 +25,11 @@ export function createSteadiness({ hold = 1.2, maxMove = 0.025 } = {}) {
  * @param wrists wrist points, to tell which side is "toward the player"
  * @param aspect frame width / height, so angles are measured in real pixels
  * @param opts.tipV where the fingertips sit across the keys (0 = far end, 1 = near end)
+ * @param opts.orient 'auto': face the keys toward the wrists (camera above the table);
+ *   'upright': black keys always at the top of the picture (camera in front of you,
+ *   where fingertips appear below the wrists)
  */
-export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, depthRatio = 0.4, maxAngle = 35 } = {}) {
+export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, depthRatio = 0.4, maxAngle = 35, orient = 'auto' } = {}) {
   if (tips.length < 2 || !wrists.length) return null;
   const P = tips.map((p) => [p.x * aspect, p.y]);
   const cx = P.reduce((s, p) => s + p[0], 0) / P.length;
@@ -44,7 +47,8 @@ export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, dep
   // so low notes stay on the player's left.
   const wx = wrists.reduce((s, p) => s + p.x * aspect, 0) / wrists.length;
   const wy = wrists.reduce((s, p) => s + p.y, 0) / wrists.length;
-  if ((wx - cx) * n[0] + (wy - cy) * n[1] < 0) { u = [-u[0], -u[1]]; n = [-n[0], -n[1]]; }
+  const toward = orient === 'upright' ? n[1] : (wx - cx) * n[0] + (wy - cy) * n[1];
+  if (toward < 0) { u = [-u[0], -u[1]]; n = [-n[0], -n[1]]; }
 
   const proj = P.map(([x, y]) => (x - cx) * u[0] + (y - cy) * u[1]);
   const lo = Math.min(...proj), hi = Math.max(...proj);

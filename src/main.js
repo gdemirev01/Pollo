@@ -125,7 +125,7 @@ function apply(key) {
     case 'reverb': if (synth) synth.reverbAmount = settings.reverb; break;
     case 'mirror':
     case 'flip': handle(detector.reset()); needReference = true; break;
-    case 'camera': if (stream) startCamera().catch(cameraError); break;
+    case 'camera': if (stream) startCamera().then(autoSnapAgain).catch(cameraError); break;
     case 'accent': document.documentElement.style.setProperty('--accent', settings.accent); break;
   }
 }
@@ -207,15 +207,20 @@ $('#editBtn2').addEventListener('click', () => setEditing(true));
 $('#doneEdit').addEventListener('click', () => setEditing(false));
 
 // ---------- snap to hands ----------
-let snapping = null; // { steady, started }
-function startSnap() {
+let snapping = null; // { steady, started, auto }
+// auto: started by the app when the camera comes on; waits for hands as long as
+// it takes and can be skipped. Otherwise started by the Snap button.
+function startSnap({ auto = false } = {}) {
   if (!tracker) { setStatus('Start the camera first, then snap the keyboard to your hands.', 'err'); return; }
   if (editing) setEditing(false);
   handle(detector.reset());
-  snapping = { steady: createSteadiness({ hold: 1.2, maxMove: 0.025 }), started: performance.now() };
+  snapping = { steady: createSteadiness({ hold: 1.2, maxMove: auto ? 0.035 : 0.025 }), started: performance.now(), auto };
   $('#snapBanner').hidden = false;
   document.body.classList.add('editing');
-  $('#snapText').textContent = 'Rest your hands on the table where you want to play, and hold still.';
+  $('#snapText').textContent = auto
+    ? 'Show your hands where you want to play and hold still. The keyboard will appear under them.'
+    : 'Rest your hands where you want to play, and hold still.';
+  $('#snapCancel').textContent = auto ? 'Skip' : 'Cancel';
   $('#snapBar').style.width = '0%';
   if (narrow.matches) setPanel(false);
 }
@@ -238,14 +243,15 @@ function snapStep(now) {
   const progress = snapping.steady.add(now / 1000, tips);
   $('#snapBar').style.width = `${Math.round(progress * 100)}%`;
   $('#snapText').textContent = !hands.length
-    ? 'No hands in view yet. Rest your hands on the table in front of the camera.'
-    : progress < 1 ? 'Hold still…' : 'Placing the keyboard…';
+    ? (snapping.auto ? 'Show your hands where you want to play. The keyboard will appear under them.' : 'No hands in view yet. Hold your hands in front of the camera.')
+    : progress < 1 ? 'Found your hands. Hold still…' : 'Placing the keyboard…';
   if (progress >= 1) {
     const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
-    const q = snapQuad(list, wrists, aspect);
+    // Camera above the table: face the keys toward the wrists. Camera in front: keep them upright.
+    const q = snapQuad(list, wrists, aspect, { orient: settings.mode === 'surface' ? 'auto' : 'upright' });
     if (q && isValidQuad(q)) { setQuad(q); endSnap('Keyboard placed under your hands. Use Move keys to adjust it.'); }
     else endSnap('Could not fit the keyboard there. Try with your hands a bit further apart.', 'err');
-  } else if (now - snapping.started > 20000) {
+  } else if (!snapping.auto && now - snapping.started > 20000) {
     endSnap('Could not see your hands holding still. Try again with good light.', 'err');
   }
 }
@@ -310,8 +316,10 @@ $('#switchCam').addEventListener('click', () => {
   settings.camera = settings.camera === 'facing:environment' ? 'facing:user' : 'facing:environment';
   settings.mirror = settings.camera === 'facing:user';
   save(); writeControls();
-  if (stream) startCamera().catch(cameraError);
+  if (stream) startCamera().then(autoSnapAgain).catch(cameraError);
 });
+// A different camera sees the table differently: place the keyboard again.
+function autoSnapAgain() { if (settings.autoSnap && tracker && !editing) startSnap({ auto: true }); }
 
 function cameraError(err) {
   console.error(err);
@@ -331,6 +339,7 @@ $('#start').addEventListener('click', async () => {
     tracker = await createHandTracker({ numHands: 2 });
     setStatus('Ready. Show your hands.', 'ok');
     keepAwake();
+    if (settings.autoSnap) startSnap({ auto: true });
   } catch (err) {
     cameraError(err);
   }

@@ -21,6 +21,7 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 
 ### Putting the keyboard on the table
 
+- **Automatic placement**: when the camera comes on, hold your hands still where you want to play and the keyboard appears under them (with the front camera too). Press **Skip** to keep the last position instead. Turn it off with *Place keyboard under my hands when the camera first sees them*. With the camera in front of you the keyboard stays upright; in Table mode it faces the keys toward your wrists.
 - **Snap to hands**: press it, then rest your hands on the table where you want to play and hold still for about a second. The keyboard lands under your fingertips, lined up with them, sized to your hand span. It stays there: it only moves when you use **Move keys** or snap again.
 - **Angle it onto the table**: in **Move keys**, drag a corner to where the table's surface really is (or onto the corners of a paper keyboard). The keys are drawn and hit-tested in perspective. Drag inside to move, drag an edge to resize, **Rectangle** to straighten it out.
 - **Keep keyboard pinned to the table if the camera moves** (on by default): the app remembers what the table looks like around the keyboard and slides the keyboard along if the phone shifts or wobbles. Hands are left out of the comparison. It needs some texture to lock on to (wood grain, a cloth, a printed sheet); on a plain white table it says *Can't follow table*. It follows sliding, not rotating or zooming.
