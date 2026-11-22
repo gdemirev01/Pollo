@@ -5,7 +5,7 @@ import { createHandTracker } from './hands.js';
 import { loadSettings, saveSettings, defaultQuad, DEFAULTS } from './settings.js';
 import { grabAt, dragQuad, cursorFor, rectQuad, boundsOf, shiftQuad, isValidQuad } from './layout-editor.js';
 import { placement } from './homography.js';
-import { createSteadiness, snapQuad } from './snap.js';
+import { createSteadiness, snapLayout, fingerSpacing } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
@@ -270,8 +270,24 @@ function snapStep(now) {
   if (progress >= 1) {
     const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
     // Camera above the table: face the keys toward the wrists. Camera in front: keep them upright.
-    const q = snapQuad(list, wrists, aspect, { orient: settings.mode === 'surface' ? 'auto' : 'upright' });
-    if (q && isValidQuad(q)) { setQuad(q); endSnap('Keyboard placed under your hands. Use Move keys to adjust it.'); }
+    // Finger-sized keys: each white key as wide as the gap between neighbouring fingertips.
+    const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
+    const keyWidth = fingerSpacing(perHand, aspect);
+    const r = snapLayout(list, wrists, aspect, {
+      orient: settings.mode === 'surface' ? 'auto' : 'upright',
+      keyWidth, keyCount: settings.whiteCount,
+    });
+    if (r && isValidQuad(r.quad)) {
+      let note = '';
+      if (r.keyCount !== settings.whiteCount) {
+        note = ` Only ${r.keyCount} finger-sized white keys fit on screen, so the keyboard has ${r.keyCount} now.`;
+        settings.whiteCount = r.keyCount;
+        writeControls();
+        apply('whiteCount');
+      }
+      setQuad(r.quad);
+      endSnap(`Keyboard placed under your hands, one key per finger.${note} Use Move keys to adjust it.`);
+    }
     else endSnap('Could not fit the keyboard there. Try with your hands a bit further apart.', 'err');
   } else if (!snapping.auto && now - snapping.started > 20000) {
     endSnap('Could not see your hands holding still. Try again with good light.', 'err');
@@ -844,50 +860,44 @@ function drawPiano(now, dpr, pose, size, pressed) {
   g.restore();
 }
 
-// Cut the hands out of the camera picture and draw them over the keys, so
-// fingers sit on top of the keys instead of behind them.
-const handLayer = document.createElement('canvas');
-const hctx = handLayer.getContext('2d');
+// Draw the hands (and forearms) from the camera picture over the keys, so fingers
+// sit on top of the keys instead of behind them. Done with a plain clipping path,
+// which every browser draws the same way (iPhone's engine included).
+function addShape(pts) {
+  // Wind every shape the same way so overlapping shapes add up instead of cutting holes.
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+  const list = a < 0 ? [...pts].reverse() : pts;
+  g.moveTo(list[0].x, list[0].y);
+  for (let i = 1; i < list.length; i++) g.lineTo(list[i].x, list[i].y);
+  g.closePath();
+}
+function addCapsule(a, b, r) {
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * r, ny = (dx / len) * r;
+  addShape([{ x: a.x + nx, y: a.y + ny }, { x: b.x + nx, y: b.y + ny }, { x: b.x - nx, y: b.y - ny }, { x: a.x - nx, y: a.y - ny }]);
+  for (const c of [a, b]) { g.moveTo(c.x + r, c.y); g.arc(c.x, c.y, r, 0, Math.PI * 2, false); g.closePath(); }
+}
 function drawHandsOver(W, H) {
-  if (handLayer.width !== W || handLayer.height !== H) { handLayer.width = W; handLayer.height = H; }
-  hctx.setTransform(1, 0, 0, 1, 0, 0);
-  hctx.globalCompositeOperation = 'source-over';
-  hctx.clearRect(0, 0, W, H);
-  hctx.filter = 'blur(2px)'; // soft edge
-  hctx.strokeStyle = hctx.fillStyle = '#fff';
-  hctx.lineCap = hctx.lineJoin = 'round';
+  g.save();
+  g.beginPath();
   for (const hand of hands) {
     const lm = hand.landmarks.map((p) => ({ x: p.x * W, y: p.y * H }));
     const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
-    hctx.beginPath();
-    [0, 1, 2, 5, 9, 13, 17].forEach((i, k) => (k ? hctx.lineTo(lm[i].x, lm[i].y) : hctx.moveTo(lm[i].x, lm[i].y)));
-    hctx.closePath();
-    hctx.fill();
-    hctx.lineWidth = size * 0.34;
-    hctx.stroke();
-    hctx.lineWidth = size * 0.27; // finger thickness
-    hctx.beginPath();
-    for (const [a, b] of CONNECTIONS) { hctx.moveTo(lm[a].x, lm[a].y); hctx.lineTo(lm[b].x, lm[b].y); }
-    hctx.stroke();
-    // The forearm: a wide band from the wrist away from the fingers, to the picture's edge.
-    const dx = lm[0].x - lm[9].x, dy = lm[0].y - lm[9].y;
-    const reach = (W + H) / Math.max(1e-3, size);
-    hctx.lineWidth = size * 1.15;
-    hctx.lineCap = 'butt';
-    hctx.beginPath();
-    hctx.moveTo(lm[0].x - dx * 0.15, lm[0].y - dy * 0.15);
-    hctx.lineTo(lm[0].x + dx * reach, lm[0].y + dy * reach);
-    hctx.stroke();
-    hctx.lineCap = 'round';
+    if (!(size > 1)) continue;
+    addShape([0, 1, 2, 5, 9, 13, 17].map((i) => lm[i])); // palm
+    for (const [a, b] of CONNECTIONS) addCapsule(lm[a], lm[b], size * 0.14); // fingers, palm edges
+    // Forearm: a band from the wrist away from the fingers, to the picture's edge.
+    const ux = (lm[0].x - lm[9].x) / size, uy = (lm[0].y - lm[9].y) / size, reach = W + H;
+    const half = size * 0.55;
+    const s0 = { x: lm[0].x - ux * size * 0.15, y: lm[0].y - uy * size * 0.15 }, s1 = { x: lm[0].x + ux * reach, y: lm[0].y + uy * reach };
+    addShape([{ x: s0.x - uy * half, y: s0.y + ux * half }, { x: s1.x - uy * half, y: s1.y + ux * half }, { x: s1.x + uy * half, y: s1.y - ux * half }, { x: s0.x + uy * half, y: s0.y - ux * half }]);
   }
-  hctx.filter = 'none';
-  hctx.globalCompositeOperation = 'source-in';
+  g.clip('nonzero');
   const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
-  hctx.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
-  hctx.drawImage(video, 0, 0, W, H);
-  hctx.setTransform(1, 0, 0, 1, 0, 0);
-  hctx.globalCompositeOperation = 'source-over';
-  g.drawImage(handLayer, 0, 0);
+  g.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
+  g.drawImage(video, 0, 0, W, H);
+  g.restore();
 }
 
 // ---------- tracking details: what the camera registers, finger by finger ----------
