@@ -84,6 +84,16 @@ test('snap: very wide or tilted hands still give a keyboard fully on screen', ()
   for (const [x, y] of q) assert.ok(x >= -1e-9 && x <= 1 + 1e-9 && y >= -1e-9 && y <= 1 + 1e-9, `${x},${y}`);
 });
 
+test('snap upright (front camera): wrists above the fingertips keep the keyboard upright', () => {
+  const tips = [0.3, 0.4, 0.5, 0.6, 0.7].map((x) => ({ x, y: 0.6 }));
+  const q = snapQuad(tips, [{ x: 0.5, y: 0.3 }], 16 / 9, { orient: 'upright' });
+  assert.ok(isValidQuad(q));
+  assert.ok(q[0][1] < q[3][1]); // black-key end at the top
+  const P = placement(q);
+  assert.ok(P.toLocal(0.3, 0.6).x < P.toLocal(0.7, 0.6).x); // low notes on the left
+  close(P.toLocal(0.5, 0.6).y, 0.72, 1e-3);
+});
+
 test('steadiness: progress builds while still and resets on movement', () => {
   const s = createSteadiness({ hold: 1, maxMove: 0.02 });
   const tips = { a: { x: 0.5, y: 0.5 } };

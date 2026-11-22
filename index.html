@@ -51,7 +51,7 @@
               <ol class="steps">
                 <li>Prop your phone, tablet or laptop on the table with the front camera facing you. Or mount a phone above the table, back camera looking down, and pick <b>Table</b> mode in Settings.</li>
                 <li>Hold your hands over the table so the camera sees your fingers.</li>
-                <li>Tap <b>Snap to hands</b> and rest your hands on the table: the keyboard lands under your fingers. Use <b>Move keys</b> to fine-tune it, or drag its corners to match the table's angle.</li>
+                <li>Hold your hands still where you want to play: the keyboard appears under your fingers. Tap <b>Snap to hands</b> to place it again. Use <b>Move keys</b> to fine-tune it, or drag its corners to match the table's angle.</li>
               </ol>
               <p class="muted" id="overlay-msg">Video stays on your device. Hand tracking runs in the browser.</p>
               <button id="start">Start</button>
@@ -127,6 +127,7 @@
             <button class="ghost" id="squareKb2">Make rectangular</button>
             <button class="ghost" id="resetKb2">Reset position</button>
           </div>
+          <label class="check" for="autoSnap"><input id="autoSnap" data-setting="autoSnap" type="checkbox" /> Place keyboard under my hands when the camera first sees them</label>
           <label class="check" for="anchor"><input id="anchor" data-setting="anchor" type="checkbox" /> Keep keyboard pinned to the table if the camera moves</label>
         </fieldset>
 

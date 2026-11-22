@@ -9,6 +9,7 @@ export const DEFAULTS = Object.freeze({
   whiteCount: 14,
   quad: [[0.03, 0.6], [0.97, 0.6], [0.97, 0.94], [0.03, 0.94]], // keyboard corners: TL, TR, BR, BL
   anchor: true,
+  autoSnap: true, // place the keyboard under the hands when they're first seen
   camera: 'facing:user',
   mirror: true,
   flip: false,
