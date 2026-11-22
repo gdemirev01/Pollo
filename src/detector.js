@@ -43,6 +43,7 @@ export function createDetector(opts = {}) {
     chordRatio: 0.8, // a finger striking with < this fraction of the strongest finger's speed is a twitch
     calibration: null, // from calibrate.js, for the current mode
     relative: true, // measure each finger against the hand's other fingers
+    maxHold: 1.5, // seconds a note can be held before it lets go on its own
     ...opts,
   };
   const fingers = new Map(); // fingerId -> state
@@ -149,8 +150,14 @@ export function createDetector(opts = {}) {
         }
 
         if (st.down) {
-          if (h > S.release) {
+          // Let go when the finger lifts, when it slides off its key, or after a while:
+          // a finger that curls under or gets lost among the others may never "lift".
+          const l = toLocal(st.sx, st.sy);
+          const under = hitTest(layout, l.x, l.y);
+          st.offKey = st.key && under?.midi !== st.key.midi ? (st.offKey || 0) + 1 : 0;
+          if (h > S.release || st.offKey >= 2 || t - st.downAt > cfg.maxHold) {
             st.down = false;
+            st.offKey = 0;
             if (st.key) events.push({ type: 'off', midi: st.key.midi, finger: id });
             st.key = null;
           }
@@ -167,6 +174,7 @@ export function createDetector(opts = {}) {
         st.hist.length = 0; // a strike uses up its lift
         if (c.speed < strongest * cfg.chordRatio) { st.quietUntil = t + 0.12; continue; }
         st.down = true;
+        st.downAt = t;
         st.state = 'pressed';
         const l = toLocal(st.sx, st.sy);
         const key = hitTest(layout, l.x, l.y);
