@@ -146,7 +146,10 @@ function cornerJump(A, B, w, h) {
   return m;
 }
 
-export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch = 14, minInliers = 15, minSpread = 0.12, minFeatures = 20 } = {}) {
+// Repeatable "random" picks for the robust fit, so the same frames give the same result.
+function seeded() { let s = 12345; return () => ((s = (s * 16807) % 2147483647) / 2147483647); }
+
+export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch = 14, minInliers = 15, minSpread = 0.12, holdBelow = 0.3, minFeatures = 20 } = {}) {
   let ref = null; // { full, half, features }
   let H = IDENTITY; // reference frame -> current frame
   let base = IDENTITY; // original placement frame -> reference frame
@@ -177,12 +180,12 @@ export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch 
       const Hinv = invert(H);
       const radius = lost ? lostSearch : search;
       const src = [], dst = [];
-      let visible = 0;
+      let inFrame = 0; // points still inside the picture (covered or not)
       for (const p of ref.features) {
         const pred = apply(H, p.x, p.y);
         if (pred.x < 2 * R + 2 || pred.y < 2 * R + 2 || pred.x > w - 2 * R - 3 || pred.y > h - 2 * R - 3) continue;
+        inFrame++;
         if (mask && mask[(pred.y | 0) * w + (pred.x | 0)]) continue;
-        visible++;
         // Coarse: half resolution, wide search.
         const th = warpedTemplate(ref.half, Hinv, pred, 2, 2);
         if (!th) continue;
@@ -198,20 +201,30 @@ export function createSurfaceTracker({ maxFeatures = 70, search = 6, lostSearch 
       }
 
       if (ref.features.length < minFeatures) { lost++; return { H: multiply(H, base), ok: false, inliers: 0 }; }
-      const fit = src.length >= 8 ? ransacHomography(src, dst, { threshold: 2 }) : null;
+      const fit = src.length >= 8 ? ransacHomography(src, dst, { threshold: 2, rng: seeded() }) : null;
       let good = !!fit && fit.inliers >= Math.max(minInliers, src.length * 0.3) && sane(fit.H, w, h);
+      let hold = false;
       if (good) {
-        // The agreeing points must be spread over the picture (not one object moving),
-        // and the view can't jump further than a phone plausibly moves in one frame.
-        const inl = dst.filter((q, i) => { const p = apply(fit.H, src[i].x, src[i].y); return Math.hypot(p.x - q.x, p.y - q.y) < 2; });
-        good = spread(inl, w, h) >= minSpread && cornerJump(fit.H, H, w, h) <= (lost ? 0.45 : 0.25) * w;
+        const idx = src.map((_, i) => i).filter((i) => { const p = apply(fit.H, src[i].x, src[i].y); return Math.hypot(p.x - dst[i].x, p.y - dst[i].y) < 2; });
+        const cover = spread(idx.map((i) => dst[i]), w, h);
+        if (cover < minSpread) good = false; // the agreeing points are one small thing moving, not the table
+        // Most of the table hidden (hands and arms over it while you play, when the phone
+        // is almost always still): the few points left can't pin the view down well,
+        // so keep the keyboard exactly where it is until more table shows again.
+        else if (cover < holdBelow || idx.length < inFrame * 0.4) hold = true;
+        // The view can't jump further than a phone plausibly moves in one frame.
+        else if (cornerJump(fit.H, H, w, h) > (lost ? 0.45 : 0.25) * w) good = false;
       }
       if (good) {
-        H = fit.H;
+        // Dead zone: ignore changes smaller than a pixel or two, so the keyboard stays
+        // still instead of shimmering. Real slow drift adds up past it and is followed.
+        if (!hold && cornerJump(fit.H, H, w, h) > 1.5) H = fit.H;
         lost = 0;
         lastInliers = fit.inliers;
-        // Many points gone (left the picture or hidden): start again from this frame.
-        if (visible < ref.features.length * 0.5 || fit.inliers < Math.max(minInliers * 2, ref.features.length * 0.35)) {
+        // Many points have left the picture (the phone moved): start again from this
+        // frame. Points that are only covered (hands, arms) don't count: picking fresh
+        // points then could land them on an arm, and the keyboard would follow the arm.
+        if (!hold && inFrame < ref.features.length * 0.5) {
           base = multiply(H, base);
           H = IDENTITY;
           setFrame(gray, mask, w, h);

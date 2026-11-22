@@ -130,3 +130,18 @@ export function ransacHomography(src, dst, { iterations = 150, threshold = 2.5, 
   const H = fitHomography(inl.map((i) => src[i]), inl.map((i) => dst[i])) || best;
   return { H, inliers: inl.length };
 }
+
+/** Least-squares affine transform (no perspective) taking src[i] to dst[i], as a 3x3 matrix. */
+export function fitAffine(src, dst) {
+  if (src.length < 3) return null;
+  const AtA = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], bu = [0, 0, 0], bv = [0, 0, 0];
+  for (let i = 0; i < src.length; i++) {
+    const r = [src[i].x, src[i].y, 1];
+    for (let a = 0; a < 3; a++) {
+      bu[a] += r[a] * dst[i].x; bv[a] += r[a] * dst[i].y;
+      for (let b = 0; b < 3; b++) AtA[a][b] += r[a] * r[b];
+    }
+  }
+  const u = solve(AtA.map((row) => [...row]), bu), v = solve(AtA.map((row) => [...row]), bv);
+  return u && v ? [u[0], u[1], u[2], v[0], v[1], v[2], 0, 0, 1] : null;
+}
