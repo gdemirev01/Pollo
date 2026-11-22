@@ -75,3 +75,52 @@ test('two hands are tracked independently', () => {
   assert.equal(ev.length, 2);
   assert.notEqual(ev[0].midi, ev[1].midi);
 });
+
+// ---- surface mode (camera above, looking down) ----
+// Hand seen from above, fingers flat on the table. `lift[f]` brings fingertip f
+// toward the camera (z more negative) and shortens it in the picture.
+function topHand(id, { lift = [0, 0, 0, 0, 0], cx = 0.35 } = {}) {
+  const lm = Array.from({ length: 21 }, () => ({ x: cx, y: 0.9, z: 0 }));
+  lm[0] = { x: cx, y: 0.95, z: 0 }; // wrist
+  [2, 5, 9, 13, 17].forEach((b, f) => (lm[b] = { x: cx + (f - 2) * 0.04, y: 0.8, z: 0 }));
+  [4, 8, 12, 16, 20].forEach((t, f) => {
+    const L = 0.12 * (1 - 0.4 * lift[f]); // projected length shrinks as the finger lifts
+    lm[t] = { x: cx + (f - 2) * 0.04, y: 0.8 - L, z: -0.05 * lift[f] };
+  });
+  return { id, landmarks: lm };
+}
+
+test('surface mode: lift then land plays the key under the fingertip', () => {
+  const det = createDetector({ mode: 'surface', smoothing: 0 });
+  const L = buildLayout({ startMidi: 60, whiteCount: 7, x: 0.2, y: 0.55, width: 0.35, height: 0.3 });
+  const frames = [];
+  for (let i = 0; i < 5; i++) frames.push([topHand('R')]); // resting: learn table level
+  frames.push([topHand('R', { lift: [0, 1, 0, 0, 0] })]); // index lifts
+  frames.push([topHand('R', { lift: [0, 1, 0, 0, 0] })]);
+  frames.push([topHand('R')]); // lands
+  frames.push([topHand('R')]); // rests: no repeat
+  frames.push([topHand('R', { lift: [0, 1, 0, 0, 0] })]); // lifts again: note off
+  const ev = frames.flatMap((h, i) => det.update(h, L, i / 30).events);
+  assert.deepEqual(ev.map((e) => e.type), ['on', 'off']);
+  assert.equal(ev[0].finger, 'R:1');
+  // Index tip lands at x = 0.31, y = 0.68: inside the black-key band, on D#4
+  // (black key centred on the D/E boundary at x = 0.30, width 0.03).
+  assert.equal(ev[0].midi, 63);
+});
+
+test('surface mode: resting hand and slow drift stay silent', () => {
+  const det = createDetector({ mode: 'surface', smoothing: 0 });
+  const L = buildLayout({ startMidi: 60, whiteCount: 7, x: 0.2, y: 0.55, width: 0.35, height: 0.3 });
+  let n = 0;
+  for (let i = 0; i < 60; i++) n += det.update([topHand('R', { lift: [0, 0.05, 0.05, 0.05, 0.05] })], L, i / 30).events.length;
+  assert.equal(n, 0);
+});
+
+test('surface mode: lifting alone does not play', () => {
+  const det = createDetector({ mode: 'surface', smoothing: 0 });
+  const L = buildLayout({ startMidi: 60, whiteCount: 7, x: 0.2, y: 0.55, width: 0.35, height: 0.3 });
+  const ev = [[topHand('R')], [topHand('R')], [topHand('R', { lift: [0, 0, 1, 0, 0] })], [topHand('R', { lift: [0, 0, 1, 0, 0] })]]
+    .flatMap((h, i) => det.update(h, L, i / 30).events);
+  assert.equal(ev.length, 0);
+  assert.equal(det.smoothed('R:2').state, 'armed');
+});

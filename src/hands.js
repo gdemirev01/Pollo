@@ -20,18 +20,15 @@ export async function createHandTracker({ numHands = 2 } = {}) {
 
   return {
     delegate,
-    /** Returns hands in *mirrored display* coordinates. */
+    /** Returns hands in raw camera coordinates (0..1); the app applies mirror/flip. */
     detect(video, timestampMs) {
       const res = landmarker.detectForVideo(video, timestampMs);
       const used = new Set();
       return (res.landmarks || []).map((lm, i) => {
-        // MediaPipe assumes a mirrored (selfie) image; we feed the raw camera
-        // frame, so its label is the opposite of the player's actual hand.
-        const raw = res.handedness?.[i]?.[0]?.categoryName;
-        let id = raw === 'Left' ? 'Right' : raw === 'Right' ? 'Left' : `Hand${i}`;
+        let id = res.handedness?.[i]?.[0]?.categoryName ?? `Hand${i}`;
         if (used.has(id)) id = `${id}${i}`; // both hands got the same label
         used.add(id);
-        return { id, landmarks: lm.map((p) => ({ x: 1 - p.x, y: p.y, z: p.z })) };
+        return { id, landmarks: lm };
       });
     },
   };
