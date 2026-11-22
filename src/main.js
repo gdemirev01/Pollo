@@ -9,6 +9,8 @@ import { createSteadiness, snapLayout, fingerSpacing } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
+import { autoSizeStep } from './autosize.js';
+import { cameraToWorld, intrinsics, worldFromQuad, quadFromWorld, snapToTable } from './gravity.js';
 import { poseFromQuad, keyBoxes, keyboardSize, boxFaces, WHITE_HEIGHT_CM, BLACK_EXTRA_CM } from './ar.js';
 import { apply as applyH } from './homography.js';
 
@@ -42,7 +44,57 @@ function makeLayout() {
 // (a perspective transform in pixels of the small tracking image), or null.
 let tableMotion = null;
 let lastGoodQuad = null;
+// ---------- the phone's motion sensors ----------
+// The phone's rotation tells us where "down" is, so the keyboard can be kept as
+// four corners on the (level) table and re-projected as the phone turns or tilts.
+const orient = { ok: false, a: 0, b: 0, g: 0, last: 0, denied: false };
+function onOrient(e) {
+  if (e.beta == null) return; // no sensor (e.g. a laptop)
+  orient.a = e.alpha || 0; orient.b = e.beta; orient.g = e.gamma || 0;
+  orient.ok = true; orient.last = performance.now();
+}
+async function enableMotion() {
+  try {
+    // iPhone asks first; this has to start straight from the Start tap.
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      orient.denied = (await DeviceOrientationEvent.requestPermission()) !== 'granted';
+    }
+  } catch { orient.denied = true; }
+  // Listen either way: some browsers refuse the request yet still send readings.
+  // If none arrive, the keyboard simply isn't held by motion.
+  window.addEventListener('deviceorientation', onOrient);
+}
+function videoSize() { return { vw: video.videoWidth || 1280, vh: video.videoHeight || 720 }; }
+function cameraRotation() {
+  if (!settings.useMotion || !orient.ok || performance.now() - orient.last > 1000) return null;
+  const facing = settings.camera === 'facing:user' || (!settings.camera.startsWith('facing:') && settings.mirror) ? 'user' : 'environment';
+  const angle = (screen.orientation?.angle ?? window.orientation ?? 0) + (settings.flip ? 180 : 0);
+  return cameraToWorld(orient.a, orient.b, orient.g, facing, angle);
+}
+let worldKb = null; // keyboard corners on the table (world), when the motion sensors are in use
+function syncWorld(q) {
+  const R = cameraRotation();
+  if (!R || editing) { worldKb = null; return; }
+  const { vw, vh } = videoSize();
+  worldKb = worldFromQuad(intrinsics(vw, vh, settings.fov), R, q.map(([x, y]) => [x * vw, y * vh]));
+}
+function motionQuad() {
+  const R = cameraRotation();
+  if (!R || !worldKb) return null;
+  const { vw, vh } = videoSize();
+  const q = quadFromWorld(intrinsics(vw, vh, settings.fov), R, worldKb);
+  return q ? q.map(([x, y]) => [x / vw, y / vh]) : null;
+}
+
 function effQuad() {
+  // 1. The visual table tracker, whenever it has the table (it also sees the phone sliding).
+  // 2. Otherwise the motion sensors (turning and tilting).
+  // 3. Otherwise where the keyboard was placed.
+  if (worldKb && !editing && !(tableMotion && follow.ok)) {
+    const q = motionQuad();
+    if (q && isValidQuad(q)) { lastGoodQuad = q; return q; }
+    return lastGoodQuad || settings.quad;
+  }
   if (!tableMotion) return settings.quad;
   const { H, w, h } = tableMotion;
   const q = settings.quad.map(([x, y]) => { const p = applyH(H, x * w, y * h); return [p.x / w, p.y / h]; });
@@ -134,8 +186,13 @@ function apply(key) {
     case 'quad':
       handle(detector.reset());
       tableMotion = null; lastGoodQuad = null;
+      syncWorld(settings.quad);
       updatePlacement();
       needReference = true;
+      break;
+    case 'useMotion':
+    case 'fov':
+      syncWorld(effQuad());
       break;
     case 'anchor':
       tableMotion = null; lastGoodQuad = null;
@@ -210,9 +267,10 @@ function setEditing(on) {
     if (snapping) endSnap();
     // Edit where the keyboard is right now (including any table-following shift).
     settings.quad = effQuad();
-    tableMotion = null; lastGoodQuad = null;
+    tableMotion = null; lastGoodQuad = null; worldKb = null;
     updatePlacement();
   } else if (editing) {
+    editing = false; // so the keyboard is put back on the table below
     save();
     apply('quad');
   }
@@ -273,7 +331,20 @@ function snapStep(now) {
     // Finger-sized keys: each white key as wide as the gap between neighbouring fingertips.
     const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
     const keyWidth = fingerSpacing(perHand, aspect);
-    const r = snapLayout(list, wrists, aspect, {
+    let r = null;
+    const R = cameraRotation();
+    if (R) {
+      // With the motion sensors: flat on the level table, in true perspective, lined up with the knuckles.
+      const { vw, vh } = videoSize();
+      const K = intrinsics(vw, vh, settings.fov);
+      const px = (p) => ({ x: p.x * vw, y: p.y * vh });
+      const handsPx = hands.map((h) => ({ tips: [8, 12, 16, 20].map((i) => px(h.landmarks[i])), knuckles: [px(h.landmarks[5]), px(h.landmarks[17])], wrist: px(h.landmarks[0]) }));
+      const fits = (corners) => { const q = quadFromWorld(K, R, corners); return !!q && q.every(([x, y]) => x > -0.02 * vw && x < 1.02 * vw && y > -0.02 * vh && y < 1.02 * vh); };
+      const g3 = snapToTable(K, R, handsPx, settings.whiteCount, { fits });
+      const q = g3 && quadFromWorld(K, R, g3.corners);
+      if (q) r = { quad: q.map(([x, y]) => [x / vw, y / vh]), keyCount: g3.keyCount };
+    }
+    if (!r) r = snapLayout(list, wrists, aspect, {
       orient: settings.mode === 'surface' ? 'auto' : 'upright',
       keyWidth, keyCount: settings.whiteCount,
     });
@@ -444,6 +515,7 @@ function cameraError(err) {
 // ---------- start ----------
 $('#start').addEventListener('click', async () => {
   $('#start').disabled = true;
+  if (settings.useMotion) await enableMotion();
   synth = new PianoSynth();
   await synth.resume();
   apply('volume'); apply('reverb');
@@ -629,21 +701,44 @@ function followTable(now) {
   const r = surface.track(gray, mask, w, h);
   if (r.ok) {
     tableMotion = { H: r.H, w, h };
+    if (worldKb || cameraRotation()) syncWorld(effQuad()); // hand over smoothly if the tracker loses the table
     updatePlacement();
     follow.lastGood = now;
     follow.ok = true;
   } else if (now - follow.lastGood > 1000) {
     follow.ok = false;
     // Once per session: say why, and what helps.
-    if (!follow.hinted && hands.length && now - follow.lastGood > 6000) {
+    if (!follow.hinted && !worldKb && hands.length && now - follow.lastGood > 6000) {
       follow.hinted = true;
       setStatus("This surface is too plain to pin the keyboard to. Settings has a printable Pollo mat that fixes this; until then, keep the phone still.", 'err');
     }
   }
 }
 
+// ---------- keys that keep fitting the fingers ----------
+let lastResize = 0, sizeDirty = false, lastSizeSave = 0;
+function autoResize(now) {
+  const dt = lastResize ? Math.min(0.2, (now - lastResize) / 1000) : 1 / 30;
+  lastResize = now;
+  if (sizeDirty && (!hands.length || now - lastSizeSave > 2000)) { save(); sizeDirty = false; lastSizeSave = now; }
+  // When pinned to a textured table, the table tracker already handles the phone's distance.
+  if (!settings.autoSize || !hands.length || (settings.anchor && follow.ok)) return;
+  const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+  const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
+  const base = effQuad();
+  const q = autoSizeStep(base, settings.whiteCount, perHand, aspect, { dt });
+  if (!q) return;
+  settings.quad = q;
+  tableMotion = null; lastGoodQuad = null;
+  syncWorld(q);
+  needReference = true; // the table tracker starts again from the new size
+  updatePlacement();
+  sizeDirty = true;
+}
+
 // ---------- loop ----------
 const smoother = createHandSmoother();
+let lastHandSeen = -1e9, pianoAlpha = 0, lastDraw = 0;
 let lastVideoTime = -1;
 let fps = 0, lastFrame = performance.now();
 
@@ -652,11 +747,15 @@ function frame(now) {
   if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     try {
+      if (hands.length) lastHandSeen = now;
       hands = smoother.smooth(tracker.detect(video, now).map((h) => ({ id: h.id, landmarks: h.landmarks.map(toView) })), now / 1000);
+      if (worldKb) updatePlacement(); // the phone may have turned
+      else if (!editing && !snapping && cameraRotation() && !(tableMotion && follow.ok)) syncWorld(effQuad()); // sensors just came on
       if (calibrating) { calibrationStep(now); active = new Map(); }
       else if (snapping) { snapStep(now); active = new Map(); }
       else if (!editing) {
         followTable(now);
+        autoResize(now);
         const res = detector.update(hands, layout, now / 1000, place.toLocal);
         handle(res.events);
         active = res.active;
@@ -704,6 +803,15 @@ function draw(now) {
     g.fillRect(0, 0, W, H);
   }
 
+  // The piano shows once your hands are in view, and fades out a little after they leave.
+  // Always shown while editing, and when there's no camera (so touch play still works).
+  const seen = hands.length ? now : lastHandSeen;
+  const showPiano = !tracker || editing || (now - seen < 2000 && !snapping);
+  const fadeStep = Math.min(1, (now - (lastDraw || now)) / 250);
+  lastDraw = now;
+  pianoAlpha += ((showPiano ? 1 : 0) - pianoAlpha) * (fadeStep || 1);
+  if (pianoAlpha < 0.01) pianoAlpha = 0;
+
   const pressed = new Set([...active.values()].map((k) => k.midi));
   for (const m of heldExtra.values()) pressed.add(m);
   const op = settings.opacity;
@@ -737,14 +845,18 @@ function draw(now) {
     }
   };
   let drew3d = false;
-  if (settings.look3d) {
+  g.save();
+  g.globalAlpha = pianoAlpha;
+  if (pianoAlpha === 0) { /* nothing to draw yet */ }
+  else if (settings.look3d) {
     try { drew3d = drawKeys3D(now, W, H, dpr, pressed); } catch (e) { reportDrawError('3D keys', e); }
   }
-  if (!drew3d) {
+  if (!drew3d && pianoAlpha > 0) {
     layout.keys.filter((k) => !k.black).forEach(drawKey);
     layout.keys.filter((k) => k.black).forEach(drawKey);
   }
-  if (settings.occlusion && drew3d && hands.length && video.readyState >= 2) {
+  g.restore();
+  if (settings.occlusion && drew3d && pianoAlpha > 0 && hands.length && video.readyState >= 2) {
     try { drawHandsOver(W, H); } catch (e) { reportDrawError('hands in front of keys', e); }
   }
 
@@ -821,7 +933,7 @@ function drawKeys3D(now, W, H, dpr, pressed) {
   g.clearRect(0, 0, W, H);
   try { drawPiano(now, dpr, pose, size, pressed); } finally { g = main; }
   g.save();
-  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8));
+  g.globalAlpha = Math.min(1, Math.max(0.3, settings.opacity * 1.8)) * pianoAlpha;
   g.drawImage(pianoLayer, 0, 0);
   g.restore();
   return true;
@@ -1007,11 +1119,12 @@ function drawTracking(now, W, H, dpr) {
       g.fillText(c, x, fy + 4 * dpr);
       x += g.measureText(c).width + 8 * dpr;
     }
-    if (settings.anchor) {
+    if (settings.anchor || worldKb) {
       g.beginPath(); g.arc(x + 4 * dpr, fy, 4 * dpr, 0, Math.PI * 2);
-      g.fillStyle = follow.ok ? '#4ade80' : '#fbbf24'; g.fill();
+      const held = follow.ok || !!worldKb;
+      g.fillStyle = held ? '#4ade80' : '#fbbf24'; g.fill();
       g.fillStyle = '#ebedf3';
-      g.fillText(follow.ok ? 'pinned' : 'not pinned', x + 12 * dpr, fy + 4 * dpr);
+      g.fillText(follow.ok ? 'pinned' : worldKb ? 'held by motion' : 'not pinned', x + 12 * dpr, fy + 4 * dpr);
     }
   }
 }
@@ -1088,4 +1201,4 @@ fitStage();
 requestAnimationFrame(frame);
 
 // Exposed for debugging in the browser console.
-window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get tableMotion() { return tableMotion; }, get follow() { return follow; }, effQuad, toScreen: (u, v) => place.toScreen(u, v) };
+window.pollo = { settings, detector, get synth() { return synth; }, get layout() { return layout; }, get tableMotion() { return tableMotion; }, get worldKb() { return worldKb; }, orient, cameraRotation, get pianoAlpha() { return pianoAlpha; }, get follow() { return follow; }, effQuad, toScreen: (u, v) => place.toScreen(u, v) };
