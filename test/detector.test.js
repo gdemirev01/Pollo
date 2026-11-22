@@ -122,3 +122,11 @@ test('zone: fingertips entering the keyboard play the key under them, sliding ch
   const ev = run(det, [mk({ x: 0.05, y: 0.4 }), mk({ x: 0.05, y: 0.9 }), mk({ x: 0.15, y: 0.9 }), mk({ x: 0.05, y: 0.4 })], L);
   assert.deepEqual(ev.map((e) => `${e.type}${e.midi}`), ['on60', 'off60', 'on62', 'off62']);
 });
+
+test('one glitchy frame does not leave a resting finger reading as lifted', () => {
+  const det = createDetector({ mode: 'tap' });
+  const glitch = frontHand('R'); glitch.landmarks[12] = { x: 0.35, y: 0.95, z: 0 }; // middle tip jumps far down for one frame
+  const ev = run(det, [...rest(15), [glitch], ...rest(3)]);
+  assert.equal(ev.length, 0);
+  assert.ok(det.smoothed('R:2').signal < 0.05, `reads ${det.smoothed('R:2').signal.toFixed(2)} after the glitch`);
+});

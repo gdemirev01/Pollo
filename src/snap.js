@@ -29,7 +29,34 @@ export function createSteadiness({ hold = 1.2, maxMove = 0.025 } = {}) {
  *   'upright': black keys always at the top of the picture (camera in front of you,
  *   where fingertips appear below the wrists)
  */
-export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, depthRatio = 0.4, maxAngle = 35, orient = 'auto' } = {}) {
+export function snapQuad(tips, wrists, aspect, opts) {
+  return snapLayout(tips, wrists, aspect, opts)?.quad ?? null;
+}
+
+/**
+ * Typical gap between neighbouring fingertips (index..pinky), in the same units
+ * snapLayout works in (x scaled by aspect). On a piano each finger rests on its own
+ * key, so this is how wide a white key should be.
+ * @param hands array of fingertip arrays, one per hand, ordered index..pinky
+ */
+export function fingerSpacing(hands, aspect) {
+  const gaps = [];
+  for (const tips of hands) for (let i = 1; i < tips.length; i++) {
+    gaps.push(Math.hypot((tips[i].x - tips[i - 1].x) * aspect, tips[i].y - tips[i - 1].y));
+  }
+  if (!gaps.length) return null;
+  gaps.sort((a, b) => a - b);
+  return gaps[gaps.length >> 1];
+}
+
+const KEY_DEPTH_PER_WIDTH = 15 / 2.35; // real white key: 15 cm long, 2.35 cm wide
+
+/**
+ * Like snapQuad, and when opts.keyWidth is given the white keys are that wide
+ * (finger-sized) and the keyboard holds opts.keyCount of them, fewer if they
+ * wouldn't fit on screen. Returns { quad, keyCount }.
+ */
+export function snapLayout(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, depthRatio = 0.4, maxAngle = 35, orient = 'auto', keyWidth = null, keyCount = 14 } = {}) {
   if (tips.length < 2 || !wrists.length) return null;
   const P = tips.map((p) => [p.x * aspect, p.y]);
   const cx = P.reduce((s, p) => s + p[0], 0) / P.length;
@@ -53,9 +80,18 @@ export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, dep
   const proj = P.map(([x, y]) => (x - cx) * u[0] + (y - cy) * u[1]);
   const lo = Math.min(...proj), hi = Math.max(...proj);
   const span = hi - lo;
-  const width = Math.min(aspect * 0.98, span * (1 + 2 * margin) + 0.1);
+  let width, depth, count = keyCount;
+  if (keyWidth) {
+    // As many finger-sized keys as asked for, if they fit across the screen.
+    const along = Math.min(Math.abs(u[0]) > 1e-6 ? aspect / Math.abs(u[0]) : Infinity, Math.abs(u[1]) > 1e-6 ? 1 / Math.abs(u[1]) : Infinity) * 0.98;
+    count = Math.max(5, Math.min(keyCount, Math.floor(along / keyWidth + 1e-9)));
+    width = count * keyWidth;
+    depth = keyWidth * KEY_DEPTH_PER_WIDTH;
+  } else {
+    width = Math.min(aspect * 0.98, span * (1 + 2 * margin) + 0.1);
+    depth = width * depthRatio;
+  }
   const mid = (lo + hi) / 2;
-  const depth = width * depthRatio;
   const c = [cx + u[0] * mid, cy + u[1] * mid];
   const corner = (a, b) => [c[0] + u[0] * a + n[0] * b, c[1] + u[1] * a + n[1] * b];
   let q = [corner(-width / 2, -tipV * depth), corner(width / 2, -tipV * depth), corner(width / 2, (1 - tipV) * depth), corner(-width / 2, (1 - tipV) * depth)];
@@ -71,5 +107,5 @@ export function snapQuad(tips, wrists, aspect, { tipV = 0.72, margin = 0.15, dep
   }
   const dx = Math.min(0, 1 - Math.max(...xs)) - Math.min(0, Math.min(...xs));
   const dy = Math.min(0, 1 - Math.max(...ys)) - Math.min(0, Math.min(...ys));
-  return q.map(([x, y]) => [x + dx, y + dy]);
+  return { quad: q.map(([x, y]) => [x + dx, y + dy]), keyCount: count };
 }

@@ -5,7 +5,7 @@ import { createHandTracker } from './hands.js';
 import { loadSettings, saveSettings, defaultQuad, DEFAULTS } from './settings.js';
 import { grabAt, dragQuad, cursorFor, rectQuad, boundsOf, shiftQuad, isValidQuad } from './layout-editor.js';
 import { placement } from './homography.js';
-import { createSteadiness, snapQuad } from './snap.js';
+import { createSteadiness, snapLayout, fingerSpacing } from './snap.js';
 import { createSurfaceTracker } from './surface-tracker.js';
 import { createHandSmoother } from './filters.js';
 import { createCalibrator } from './calibrate.js';
@@ -270,8 +270,24 @@ function snapStep(now) {
   if (progress >= 1) {
     const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
     // Camera above the table: face the keys toward the wrists. Camera in front: keep them upright.
-    const q = snapQuad(list, wrists, aspect, { orient: settings.mode === 'surface' ? 'auto' : 'upright' });
-    if (q && isValidQuad(q)) { setQuad(q); endSnap('Keyboard placed under your hands. Use Move keys to adjust it.'); }
+    // Finger-sized keys: each white key as wide as the gap between neighbouring fingertips.
+    const perHand = hands.map((hand) => [1, 2, 3, 4].map((f) => hand.landmarks[FINGERTIPS[f]]));
+    const keyWidth = fingerSpacing(perHand, aspect);
+    const r = snapLayout(list, wrists, aspect, {
+      orient: settings.mode === 'surface' ? 'auto' : 'upright',
+      keyWidth, keyCount: settings.whiteCount,
+    });
+    if (r && isValidQuad(r.quad)) {
+      let note = '';
+      if (r.keyCount !== settings.whiteCount) {
+        note = ` Only ${r.keyCount} finger-sized white keys fit on screen, so the keyboard has ${r.keyCount} now.`;
+        settings.whiteCount = r.keyCount;
+        writeControls();
+        apply('whiteCount');
+      }
+      setQuad(r.quad);
+      endSnap(`Keyboard placed under your hands, one key per finger.${note} Use Move keys to adjust it.`);
+    }
     else endSnap('Could not fit the keyboard there. Try with your hands a bit further apart.', 'err');
   } else if (!snapping.auto && now - snapping.started > 20000) {
     endSnap('Could not see your hands holding still. Try again with good light.', 'err');
@@ -300,11 +316,11 @@ function startCalibration() {
   if (editing) setEditing(false);
   if (snapping) endSnap();
   handle(detector.reset());
-  calibrating = { cal: createCalibrator(), seen: 0, last: null };
+  calibrating = { cal: createCalibrator(), phase: 'rest', restSeen: 0, seen: 0, last: null };
   $('#calBanner').hidden = false;
   document.body.classList.add('editing');
   $('#calBar').style.width = '0%';
-  $('#calText').textContent = 'Rest your hands on the table, then tap each finger a few times, one at a time, like slow notes.';
+  $('#calText').textContent = 'Rest your hand flat on the table and keep it still.';
   if (narrow.matches) setPanel(false);
 }
 function endCalibration(message, cls = 'ok') {
@@ -313,19 +329,27 @@ function endCalibration(message, cls = 'ok') {
   document.body.classList.remove('editing');
   if (message) setStatus(message, cls);
 }
+const REST_SECONDS = 2;
 function calibrationStep(now) {
   const t = now / 1000;
+  const c = calibrating;
+  const dt = c.last !== null ? Math.min(0.2, t - c.last) : 0;
+  c.last = t;
+  // Step 1: hand still on the table, so we know where "resting" is.
+  // Step 2: tap each finger, so we learn which way and how far a tap moves.
   if (hands.length) {
-    calibrating.cal.add(hands);
-    if (calibrating.last !== null) calibrating.seen += Math.min(0.2, t - calibrating.last);
+    c.cal.add(hands, c.phase);
+    if (c.phase === 'rest') { c.restSeen += dt; if (c.restSeen >= REST_SECONDS) c.phase = 'tap'; }
+    else c.seen += dt;
   }
-  calibrating.last = t;
-  const p = Math.min(1, calibrating.seen / CAL_SECONDS);
+  const p = Math.min(1, (c.restSeen + c.seen) / (REST_SECONDS + CAL_SECONDS));
   $('#calBar').style.width = `${Math.round(p * 100)}%`;
-  $('#calText').textContent = hands.length
-    ? `Tap each finger a few times, one at a time… ${Math.ceil(CAL_SECONDS - calibrating.seen)} s`
-    : 'Show your hands on the table to continue.';
-  if (p < 1) return;
+  $('#calText').textContent = !hands.length
+    ? 'Show your hand on the table to continue.'
+    : c.phase === 'rest'
+      ? `Step 1 of 2: rest your hand flat on the table and keep it still… ${Math.ceil(REST_SECONDS - c.restSeen)} s`
+      : `Step 2 of 2: tap each finger a few times, one at a time, like slow notes… ${Math.ceil(CAL_SECONDS - c.seen)} s`;
+  if (c.phase === 'rest' || c.seen < CAL_SECONDS) return;
   const result = calibrating.cal.result();
   if (!result) {
     endCalibration(hands.length || calibrating?.seen
@@ -338,7 +362,8 @@ function calibrationStep(now) {
   apply('mode');
   const first = Object.values(result.hands)[0];
   const counts = first.taps.slice(1).map((n, i) => `${FINGER_LABELS[i + 1]} ${n}`).join(', ');
-  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.`);
+  const wobble = first.restWobble > 0.5 ? ' Your hand moved during the still part: for best results calibrate again and keep it still at the start.' : '';
+  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.${wobble}`);
 }
 $('#calBtn').addEventListener('click', startCalibration);
 $('#calBtn2').addEventListener('click', startCalibration);
@@ -367,7 +392,7 @@ document.addEventListener('visibilitychange', () => { if (stream && document.vis
 // ---------- camera ----------
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
-  const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const base = { width: { ideal: 960 }, height: { ideal: 540 } }; // plenty for hand tracking, cheaper on phones
   const [kind, val] = [settings.camera.slice(0, settings.camera.indexOf(':')), settings.camera.slice(settings.camera.indexOf(':') + 1)];
   const constraints = kind === 'id' ? { ...base, deviceId: { exact: val } } : { ...base, facingMode: val };
   try {
@@ -591,13 +616,14 @@ let followSkip = 0;
 function followTable(now) {
   if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
   // On a slow phone, follow the table every other frame to leave time for hand tracking.
-  if (!needReference && fps < 22 && followSkip++ % 2) return;
+  // Every other frame is plenty; while the surface can't be followed, only try now and then.
+  if (!needReference && followSkip++ % (follow.ok || now - follow.lastGood < 3000 ? 2 : 8)) return;
   const { gray, mask, w, h } = grabTable();
   if (needReference) {
     surface.setReference(gray, mask, w, h);
     needReference = false;
     tableMotion = null; lastGoodQuad = null;
-    follow = { ok: surface.features >= 12, lastGood: now };
+    follow = { ok: surface.features >= 12, lastGood: now, hinted: follow.hinted };
     return;
   }
   const r = surface.track(gray, mask, w, h);
@@ -608,6 +634,11 @@ function followTable(now) {
     follow.ok = true;
   } else if (now - follow.lastGood > 1000) {
     follow.ok = false;
+    // Once per session: say why, and what helps.
+    if (!follow.hinted && hands.length && now - follow.lastGood > 6000) {
+      follow.hinted = true;
+      setStatus("This surface is too plain to pin the keyboard to. Settings has a printable Pollo mat that fixes this; until then, keep the phone still.", 'err');
+    }
   }
 }
 
@@ -648,7 +679,7 @@ function hexToRgba(hex, a) {
 
 function resizeCanvas() {
   const r = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.min(2, window.devicePixelRatio || 1); // 3x screens cost a lot to draw for little gain
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   return dpr;
@@ -844,50 +875,44 @@ function drawPiano(now, dpr, pose, size, pressed) {
   g.restore();
 }
 
-// Cut the hands out of the camera picture and draw them over the keys, so
-// fingers sit on top of the keys instead of behind them.
-const handLayer = document.createElement('canvas');
-const hctx = handLayer.getContext('2d');
+// Draw the hands (and forearms) from the camera picture over the keys, so fingers
+// sit on top of the keys instead of behind them. Done with a plain clipping path,
+// which every browser draws the same way (iPhone's engine included).
+function addShape(pts) {
+  // Wind every shape the same way so overlapping shapes add up instead of cutting holes.
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+  const list = a < 0 ? [...pts].reverse() : pts;
+  g.moveTo(list[0].x, list[0].y);
+  for (let i = 1; i < list.length; i++) g.lineTo(list[i].x, list[i].y);
+  g.closePath();
+}
+function addCapsule(a, b, r) {
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * r, ny = (dx / len) * r;
+  addShape([{ x: a.x + nx, y: a.y + ny }, { x: b.x + nx, y: b.y + ny }, { x: b.x - nx, y: b.y - ny }, { x: a.x - nx, y: a.y - ny }]);
+  for (const c of [a, b]) { g.moveTo(c.x + r, c.y); g.arc(c.x, c.y, r, 0, Math.PI * 2, false); g.closePath(); }
+}
 function drawHandsOver(W, H) {
-  if (handLayer.width !== W || handLayer.height !== H) { handLayer.width = W; handLayer.height = H; }
-  hctx.setTransform(1, 0, 0, 1, 0, 0);
-  hctx.globalCompositeOperation = 'source-over';
-  hctx.clearRect(0, 0, W, H);
-  hctx.filter = 'blur(2px)'; // soft edge
-  hctx.strokeStyle = hctx.fillStyle = '#fff';
-  hctx.lineCap = hctx.lineJoin = 'round';
+  g.save();
+  g.beginPath();
   for (const hand of hands) {
     const lm = hand.landmarks.map((p) => ({ x: p.x * W, y: p.y * H }));
     const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
-    hctx.beginPath();
-    [0, 1, 2, 5, 9, 13, 17].forEach((i, k) => (k ? hctx.lineTo(lm[i].x, lm[i].y) : hctx.moveTo(lm[i].x, lm[i].y)));
-    hctx.closePath();
-    hctx.fill();
-    hctx.lineWidth = size * 0.34;
-    hctx.stroke();
-    hctx.lineWidth = size * 0.27; // finger thickness
-    hctx.beginPath();
-    for (const [a, b] of CONNECTIONS) { hctx.moveTo(lm[a].x, lm[a].y); hctx.lineTo(lm[b].x, lm[b].y); }
-    hctx.stroke();
-    // The forearm: a wide band from the wrist away from the fingers, to the picture's edge.
-    const dx = lm[0].x - lm[9].x, dy = lm[0].y - lm[9].y;
-    const reach = (W + H) / Math.max(1e-3, size);
-    hctx.lineWidth = size * 1.15;
-    hctx.lineCap = 'butt';
-    hctx.beginPath();
-    hctx.moveTo(lm[0].x - dx * 0.15, lm[0].y - dy * 0.15);
-    hctx.lineTo(lm[0].x + dx * reach, lm[0].y + dy * reach);
-    hctx.stroke();
-    hctx.lineCap = 'round';
+    if (!(size > 1)) continue;
+    addShape([0, 1, 2, 5, 9, 13, 17].map((i) => lm[i])); // palm
+    for (const [a, b] of CONNECTIONS) addCapsule(lm[a], lm[b], size * 0.14); // fingers, palm edges
+    // Forearm: a band from the wrist away from the fingers, to the picture's edge.
+    const ux = (lm[0].x - lm[9].x) / size, uy = (lm[0].y - lm[9].y) / size, reach = W + H;
+    const half = size * 0.55;
+    const s0 = { x: lm[0].x - ux * size * 0.15, y: lm[0].y - uy * size * 0.15 }, s1 = { x: lm[0].x + ux * reach, y: lm[0].y + uy * reach };
+    addShape([{ x: s0.x - uy * half, y: s0.y + ux * half }, { x: s1.x - uy * half, y: s1.y + ux * half }, { x: s1.x + uy * half, y: s1.y - ux * half }, { x: s0.x + uy * half, y: s0.y - ux * half }]);
   }
-  hctx.filter = 'none';
-  hctx.globalCompositeOperation = 'source-in';
+  g.clip('nonzero');
   const sx = (settings.mirror ? -1 : 1) * (settings.flip ? -1 : 1), sy = settings.flip ? -1 : 1;
-  hctx.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
-  hctx.drawImage(video, 0, 0, W, H);
-  hctx.setTransform(1, 0, 0, 1, 0, 0);
-  hctx.globalCompositeOperation = 'source-over';
-  g.drawImage(handLayer, 0, 0);
+  g.setTransform(sx, 0, 0, sy, sx < 0 ? W : 0, sy < 0 ? H : 0);
+  g.drawImage(video, 0, 0, W, H);
+  g.restore();
 }
 
 // ---------- tracking details: what the camera registers, finger by finger ----------

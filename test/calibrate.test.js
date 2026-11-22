@@ -64,3 +64,26 @@ test('no taps during calibration (only jitter) gives no calibration', () => {
   for (let i = 0; i < 240; i++) cal.add([angledHand('R')]);
   assert.equal(cal.result(), null);
 });
+
+// Fingers hover lifted most of the time and dip briefly to the table to tap:
+// the old shape-based guess reads that the wrong way round.
+function hoverTapFrames(f) {
+  const lifted = (a) => { const l = [0.8, 0.8, 0.8, 0.8, 0.8]; l[f] = a; return [angledHand('R', l)]; };
+  return [...Array.from({ length: 12 }, () => lifted(0.8)), lifted(0.4), lifted(0)];
+}
+function hoverSession(withRest) {
+  const cal = createCalibrator();
+  if (withRest) for (let i = 0; i < 60; i++) cal.add([angledHand('R')], 'rest');
+  for (let round = 0; round < 3; round++) for (let f = 1; f < 5; f++) for (const fr of hoverTapFrames(f)) cal.add(fr, 'tap');
+  return cal.result();
+}
+
+test('with a resting phase, the lift direction is right even for hover-and-dip tapping', () => {
+  const det = createDetector({ mode: 'surface', calibration: hoverSession(true) });
+  // A hand resting on the table reads as resting (low), not as lifted.
+  run(det, Array.from({ length: 30 }, () => [angledHand('R')]));
+  for (let f = 1; f < 5; f++) assert.ok(det.smoothed(`R:${f}`).signal < 0.2, `finger ${f} reads ${det.smoothed(`R:${f}`).signal.toFixed(2)} at rest`);
+  // ...and a lift then tap plays once.
+  const ev = run(det, [...Array.from({ length: 10 }, () => [angledHand('R')]), ...tapFrames(3), ...Array.from({ length: 5 }, () => [angledHand('R')])]);
+  assert.deepEqual(ev.filter((e) => e.type === 'on').map((e) => e.finger), ['R:3']);
+});

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pollo Mat</title>
+  <style>
+    :root { --bg: #0f1117; --panel: #181b24; --text: #ebedf3; --muted: #9aa1b4; --accent: #facc15; color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .wrap { max-width: 760px; margin: 0 auto; padding-block: 20px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 14px; }
+    h1 { margin: 0; font-size: 20px; }
+    h1 span { color: var(--accent); font-weight: 400; }
+    p { margin: 0; color: var(--muted); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button, a.btn { min-height: 44px; padding: 0 18px; border-radius: 10px; border: 0; font: inherit; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; text-decoration: none; }
+    button { background: var(--accent); color: #17140a; }
+    a.btn { background: var(--panel); color: var(--text); border: 1px solid #2d3242; }
+    canvas { width: 100%; height: auto; display: block; border-radius: 8px; background: #fff; }
+    @media print {
+      @page { size: A4 portrait; margin: 0; }
+      body { background: #fff; }
+      .wrap { padding: 0; max-width: none; }
+      .screen { display: none; }
+      canvas { border-radius: 0; width: 210mm; height: 297mm; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="screen">
+      <h1>Pollo <span>mat</span></h1>
+      <p>Plain surfaces (a white table, a bedsheet) have nothing for the camera to lock on to, so the keyboard can't stay pinned when the phone moves. Print this page on A4 (or show it on a tablet lying flat) and put it under your hands: every spot of it looks different, which is exactly what the tracker needs.</p>
+    </div>
+    <div class="row screen">
+      <button id="print">Print the mat</button>
+      <button id="again" style="background:#2a2e3b;color:#ebedf3">New pattern</button>
+      <a class="btn" href="./">Back to the piano</a>
+    </div>
+    <canvas id="mat" width="1240" height="1754" aria-label="Printable tracking pattern"></canvas>
+  </div>
+  <script>
+    // A non-repeating pattern of shapes at several sizes.
+    function draw(seed) {
+      const c = document.getElementById('mat'), g = c.getContext('2d');
+      let s = seed;
+      const r = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      // Mid greys with plenty of white: lots of distinct corners for the tracker, but
+      // calm enough that hands still stand out clearly against it.
+      const shade = () => { const v = 70 + Math.floor(r() * 130); return `rgb(${v},${v},${v})`; };
+      for (const [count, size] of [[70, 80], [420, 30], [1500, 10]]) {
+        for (let i = 0; i < count; i++) {
+          g.fillStyle = shade();
+          const x = r() * c.width, y = r() * c.height, w = size * (0.3 + r()), h = size * (0.3 + r());
+          g.save(); g.translate(x, y); g.rotate(r() * Math.PI);
+          if (r() < 0.5) { g.beginPath(); g.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill(); }
+          else g.fillRect(-w / 2, -h / 2, w, h);
+          g.restore();
+        }
+      }
+    }
+    let seed = 20261122;
+    draw(seed);
+    document.getElementById('print').addEventListener('click', () => window.print());
+    document.getElementById('again').addEventListener('click', () => draw(++seed));
+  </script>
+</body>
+</html>

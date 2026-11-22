@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { placement } from '../src/homography.js';
 import { grabAt, dragQuad, isValidQuad, rectQuad } from '../src/layout-editor.js';
-import { snapQuad, createSteadiness } from '../src/snap.js';
+import { snapQuad, snapLayout, fingerSpacing, createSteadiness } from '../src/snap.js';
 
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`);
 
@@ -100,4 +100,27 @@ test('steadiness: progress builds while still and resets on movement', () => {
   close(s.add(0.5, { a: { x: 0.505, y: 0.5 } }), 0.5);
   assert.equal(s.add(0.6, { a: { x: 0.6, y: 0.5 } }), 0);
   assert.equal(s.add(1.7, { a: { x: 0.6, y: 0.5 } }), 1);
+});
+
+test('snap with finger-sized keys: each white key is one finger gap wide', () => {
+  // Two hands, fingertips 0.03 apart, hands 0.08 apart.
+  const left = [0.3, 0.33, 0.36, 0.39].map((x) => ({ x, y: 0.5 }));
+  const right = [0.47, 0.5, 0.53, 0.56].map((x) => ({ x, y: 0.5 }));
+  const spacing = fingerSpacing([left, right], 1);
+  close(spacing, 0.03, 1e-9);
+  const r = snapLayout([...left, ...right], [{ x: 0.35, y: 0.8 }, { x: 0.5, y: 0.8 }], 1, { keyWidth: spacing, keyCount: 14 });
+  assert.equal(r.keyCount, 14);
+  const keyW = (r.quad[1][0] - r.quad[0][0]) / r.keyCount;
+  close(keyW, 0.03, 1e-6);
+  // Keys are real-piano long: depth / width = 15 / 2.35.
+  close((r.quad[3][1] - r.quad[0][1]) / keyW, 15 / 2.35, 1e-6);
+  // Centred on the hands.
+  close((r.quad[0][0] + r.quad[1][0]) / 2, 0.43, 1e-6);
+});
+
+test('snap with finger-sized keys uses fewer keys when they would not fit on screen', () => {
+  const tips = [0.4, 0.47, 0.54, 0.61].map((x) => ({ x, y: 0.4 })); // big hands: 0.07 apart
+  const r = snapLayout(tips, [{ x: 0.5, y: 0.8 }], 1, { keyWidth: 0.07, keyCount: 21 });
+  assert.equal(r.keyCount, 14); // floor(0.98 / 0.07)
+  for (const [x] of r.quad) assert.ok(x >= -1e-9 && x <= 1 + 1e-9);
 });
