@@ -16,7 +16,7 @@
 // key under the fingertip. It's released when the finger lifts off again. When
 // one finger strikes, neighbours that only twitched along with it are ignored.
 import { hitTest } from './piano.js';
-import { featuresOf, calibratedHeight } from './calibrate.js';
+import { featuresOf, calibratedHeight, calibratedRest } from './calibrate.js';
 
 export const FINGERTIPS = [4, 8, 12, 16, 20];
 export const FINGER_BASES = [2, 5, 9, 13, 17]; // knuckle each finger is measured from
@@ -40,7 +40,7 @@ export function createDetector(opts = {}) {
     lengthWeight: 1.2,
     zoneMargin: 0.015,
     useThumb: false,
-    chordRatio: 0.55, // a finger striking with < this fraction of the strongest finger's speed is a twitch
+    chordRatio: 0.8, // a finger striking with < this fraction of the strongest finger's speed is a twitch
     calibration: null, // from calibrate.js, for the current mode
     ...opts,
   };
@@ -109,18 +109,26 @@ export function createDetector(opts = {}) {
           return;
         }
 
-        // Height above this finger's learned table level.
+        // Height above this finger's table level: the low end of its last few seconds
+        // (ignoring the lowest 10%, so one glitchy frame can't drag it down), and
+        // after calibration never above where the finger rested.
         const raw = rawHeight(lm, f, size, hand.id);
-        if (st.table === null) st.table = raw;
-        st.table += (raw < st.table ? 0.3 : 0.004) * (raw - st.table);
-        const h = Math.max(0, raw - st.table);
+        (st.raws ||= []).push({ t, v: raw });
+        while (st.raws.length && t - st.raws[0].t > 4) st.raws.shift();
+        const sorted = st.raws.map((r) => r.v).sort((a, b) => a - b);
+        let table = sorted[Math.floor((sorted.length - 1) * 0.1)];
+        const rest = cfg.calibration ? calibratedRest(cfg.calibration, hand.id, f) : null;
+        if (rest !== null) table = Math.min(table, rest + 0.25);
+        st.table = table;
+        const h = Math.max(0, raw - table);
         st.signal = h;
         st.hist.push({ t, h });
         while (st.hist.length && t - st.hist[0].t > 0.4) st.hist.shift();
 
-        let peak = 0, speed = 0;
+        let peak = 0, speed = 0, liftedFrames = 0;
         for (let i = 0; i < st.hist.length; i++) {
           peak = Math.max(peak, st.hist[i].h);
+          if (st.hist[i].h >= S.travel) liftedFrames++;
           if (i && t - st.hist[i].t <= 0.15) {
             const a = st.hist[i - 1], b = st.hist[i];
             speed = Math.max(speed, (a.h - b.h) / Math.max(1e-3, b.t - a.t)); // downward = positive
@@ -133,7 +141,7 @@ export function createDetector(opts = {}) {
             if (st.key) events.push({ type: 'off', midi: st.key.midi, finger: id });
             st.key = null;
           }
-        } else if (h <= S.contact && peak >= S.travel && speed >= S.speed && t >= st.quietUntil) {
+        } else if (h <= S.contact && liftedFrames >= 2 && speed >= S.speed && t >= st.quietUntil) {
           candidates.push({ id, st, speed });
         }
         st.state = st.down ? 'pressed' : peak >= S.travel ? 'armed' : 'idle';

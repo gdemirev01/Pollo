@@ -316,11 +316,11 @@ function startCalibration() {
   if (editing) setEditing(false);
   if (snapping) endSnap();
   handle(detector.reset());
-  calibrating = { cal: createCalibrator(), seen: 0, last: null };
+  calibrating = { cal: createCalibrator(), phase: 'rest', restSeen: 0, seen: 0, last: null };
   $('#calBanner').hidden = false;
   document.body.classList.add('editing');
   $('#calBar').style.width = '0%';
-  $('#calText').textContent = 'Rest your hands on the table, then tap each finger a few times, one at a time, like slow notes.';
+  $('#calText').textContent = 'Rest your hand flat on the table and keep it still.';
   if (narrow.matches) setPanel(false);
 }
 function endCalibration(message, cls = 'ok') {
@@ -329,19 +329,27 @@ function endCalibration(message, cls = 'ok') {
   document.body.classList.remove('editing');
   if (message) setStatus(message, cls);
 }
+const REST_SECONDS = 2;
 function calibrationStep(now) {
   const t = now / 1000;
+  const c = calibrating;
+  const dt = c.last !== null ? Math.min(0.2, t - c.last) : 0;
+  c.last = t;
+  // Step 1: hand still on the table, so we know where "resting" is.
+  // Step 2: tap each finger, so we learn which way and how far a tap moves.
   if (hands.length) {
-    calibrating.cal.add(hands);
-    if (calibrating.last !== null) calibrating.seen += Math.min(0.2, t - calibrating.last);
+    c.cal.add(hands, c.phase);
+    if (c.phase === 'rest') { c.restSeen += dt; if (c.restSeen >= REST_SECONDS) c.phase = 'tap'; }
+    else c.seen += dt;
   }
-  calibrating.last = t;
-  const p = Math.min(1, calibrating.seen / CAL_SECONDS);
+  const p = Math.min(1, (c.restSeen + c.seen) / (REST_SECONDS + CAL_SECONDS));
   $('#calBar').style.width = `${Math.round(p * 100)}%`;
-  $('#calText').textContent = hands.length
-    ? `Tap each finger a few times, one at a time… ${Math.ceil(CAL_SECONDS - calibrating.seen)} s`
-    : 'Show your hands on the table to continue.';
-  if (p < 1) return;
+  $('#calText').textContent = !hands.length
+    ? 'Show your hand on the table to continue.'
+    : c.phase === 'rest'
+      ? `Step 1 of 2: rest your hand flat on the table and keep it still… ${Math.ceil(REST_SECONDS - c.restSeen)} s`
+      : `Step 2 of 2: tap each finger a few times, one at a time, like slow notes… ${Math.ceil(CAL_SECONDS - c.seen)} s`;
+  if (c.phase === 'rest' || c.seen < CAL_SECONDS) return;
   const result = calibrating.cal.result();
   if (!result) {
     endCalibration(hands.length || calibrating?.seen
@@ -354,7 +362,8 @@ function calibrationStep(now) {
   apply('mode');
   const first = Object.values(result.hands)[0];
   const counts = first.taps.slice(1).map((n, i) => `${FINGER_LABELS[i + 1]} ${n}`).join(', ');
-  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.`);
+  const wobble = first.restWobble > 0.5 ? ' Your hand moved during the still part: for best results calibrate again and keep it still at the start.' : '';
+  endCalibration(`Taps calibrated. Taps seen: ${counts}. If a finger shows 0, calibrate again and tap that one too.${wobble}`);
 }
 $('#calBtn').addEventListener('click', startCalibration);
 $('#calBtn2').addEventListener('click', startCalibration);
@@ -383,7 +392,7 @@ document.addEventListener('visibilitychange', () => { if (stream && document.vis
 // ---------- camera ----------
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
-  const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const base = { width: { ideal: 960 }, height: { ideal: 540 } }; // plenty for hand tracking, cheaper on phones
   const [kind, val] = [settings.camera.slice(0, settings.camera.indexOf(':')), settings.camera.slice(settings.camera.indexOf(':') + 1)];
   const constraints = kind === 'id' ? { ...base, deviceId: { exact: val } } : { ...base, facingMode: val };
   try {
@@ -607,13 +616,14 @@ let followSkip = 0;
 function followTable(now) {
   if (!settings.anchor || video.readyState < 2 || !video.videoWidth) return;
   // On a slow phone, follow the table every other frame to leave time for hand tracking.
-  if (!needReference && fps < 22 && followSkip++ % 2) return;
+  // Every other frame is plenty; while the surface can't be followed, only try now and then.
+  if (!needReference && followSkip++ % (follow.ok || now - follow.lastGood < 3000 ? 2 : 8)) return;
   const { gray, mask, w, h } = grabTable();
   if (needReference) {
     surface.setReference(gray, mask, w, h);
     needReference = false;
     tableMotion = null; lastGoodQuad = null;
-    follow = { ok: surface.features >= 12, lastGood: now };
+    follow = { ok: surface.features >= 12, lastGood: now, hinted: follow.hinted };
     return;
   }
   const r = surface.track(gray, mask, w, h);
@@ -624,6 +634,11 @@ function followTable(now) {
     follow.ok = true;
   } else if (now - follow.lastGood > 1000) {
     follow.ok = false;
+    // Once per session: say why, and what helps.
+    if (!follow.hinted && hands.length && now - follow.lastGood > 6000) {
+      follow.hinted = true;
+      setStatus("This surface is too plain to pin the keyboard to. Settings has a printable Pollo mat that fixes this; until then, keep the phone still.", 'err');
+    }
   }
 }
 
@@ -664,7 +679,7 @@ function hexToRgba(hex, a) {
 
 function resizeCanvas() {
   const r = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.min(2, window.devicePixelRatio || 1); // 3x screens cost a lot to draw for little gain
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   return dpr;
