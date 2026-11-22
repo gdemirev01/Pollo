@@ -130,3 +130,14 @@ test('one glitchy frame does not leave a resting finger reading as lifted', () =
   assert.equal(ev.length, 0);
   assert.ok(det.smoothed('R:2').signal < 0.05, `reads ${det.smoothed('R:2').signal.toFixed(2)} after the glitch`);
 });
+
+test('the whole hand shifting (all fingers rise and settle together) plays nothing', () => {
+  // From above, moving the hand changes every finger's reading together.
+  const all = (a) => [topHand('R', { lift: [a, a, a, a, a] })];
+  const L = buildLayout({ startMidi: 60, whiteCount: 7, x: 0.2, y: 0.55, width: 0.35, height: 0.3 });
+  for (const mode of ['surface']) {
+    const det = createDetector({ mode });
+    const ev = run(det, [...Array.from({ length: 10 }, () => [topHand('R')]), all(0.5), all(1), all(1), all(0.4), all(0), all(0), ...Array.from({ length: 5 }, () => [topHand('R')])], L);
+    assert.equal(ev.length, 0, `${mode}: ${ev.map((e) => e.finger).join(' ')}`);
+  }
+});

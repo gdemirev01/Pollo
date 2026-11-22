@@ -42,6 +42,7 @@ export function createDetector(opts = {}) {
     useThumb: false,
     chordRatio: 0.8, // a finger striking with < this fraction of the strongest finger's speed is a twitch
     calibration: null, // from calibrate.js, for the current mode
+    relative: true, // measure each finger against the hand's other fingers
     ...opts,
   };
   const fingers = new Map(); // fingerId -> state
@@ -75,6 +76,7 @@ export function createDetector(opts = {}) {
       const lm = hand.landmarks;
       const size = Math.max(1e-3, dist(lm[WRIST], lm[MIDDLE_MCP]));
       const candidates = [];
+      const pending = []; // fingers measured this frame, for the strike checks below
 
       FINGERTIPS.forEach((tipIdx, f) => {
         const id = `${hand.id}:${f}`;
@@ -120,7 +122,18 @@ export function createDetector(opts = {}) {
         const rest = cfg.calibration ? calibratedRest(cfg.calibration, hand.id, f) : null;
         if (rest !== null) table = Math.min(table, rest + 0.25);
         st.table = table;
-        const h = Math.max(0, raw - table);
+        st.hAbs = Math.max(0, raw - table);
+        pending.push({ id, st, f });
+      });
+
+      // A tap is one finger moving on its own: subtract what the hand's other fingers
+      // are doing (their middle value), so the whole hand rising, settling or shifting
+      // (which changes every finger's reading together) doesn't count. Two fingers
+      // tapping together still work: the others stay at rest.
+      for (const { id, st, f } of pending) {
+        const others = pending.filter((o) => o.f !== f && o.f !== 0).map((o) => o.st.hAbs).sort((a, b) => a - b);
+        const common = cfg.relative && others.length >= 2 ? others[Math.floor((others.length - 1) / 2)] : 0;
+        const h = Math.max(0, st.hAbs - common);
         st.signal = h;
         st.hist.push({ t, h });
         while (st.hist.length && t - st.hist[0].t > 0.4) st.hist.shift();
@@ -145,7 +158,7 @@ export function createDetector(opts = {}) {
           candidates.push({ id, st, speed });
         }
         st.state = st.down ? 'pressed' : peak >= S.travel ? 'armed' : 'idle';
-      });
+      }
 
       // Strikes this frame: keep the real ones, drop fingers that only twitched along.
       const strongest = Math.max(0, ...candidates.map((c) => c.speed));
