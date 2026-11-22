@@ -52,7 +52,7 @@
             <div class="card">
               <h2>Play piano with your hands</h2>
               <ol class="steps">
-                <li>Prop your phone, tablet or laptop on the table with the front camera facing you.</li>
+                <li>Prop your phone, tablet or laptop on the table with the front camera facing you. Or mount a phone above the table, back camera looking down, and pick <b>Table</b> mode in Settings.</li>
                 <li>Hold your hands over the table so the camera sees your fingers.</li>
                 <li>Tap <b>Move keys</b> to drag and resize the keyboard to where your hands are.</li>
               </ol>
@@ -77,12 +77,13 @@
             <select id="mode" data-setting="mode">
               <option value="tap">Tap: push one finger down</option>
               <option value="zone">Touch: fingertip enters a key</option>
+              <option value="surface">Table: lift and tap (camera above)</option>
             </select>
           </label>
           <label for="sensitivity"><span>Tap sensitivity<output data-for="sensitivity"></output></span>
             <input id="sensitivity" data-setting="sensitivity" type="range" min="1" max="10" step="1" />
           </label>
-          <label class="check" for="useThumb"><input id="useThumb" data-setting="useThumb" type="checkbox" /> Use thumbs in tap mode</label>
+          <label class="check" for="useThumb"><input id="useThumb" data-setting="useThumb" type="checkbox" /> Use thumbs</label>
         </fieldset>
 
         <fieldset>
@@ -122,6 +123,7 @@
           </label>
           <label class="check" for="mirror"><input id="mirror" data-setting="mirror" type="checkbox" /> Mirror image</label>
           <label class="check" for="flip"><input id="flip" data-setting="flip" type="checkbox" /> Upside down (camera mounted flipped)</label>
+          <label class="check" for="tracking"><input id="tracking" data-setting="tracking" type="checkbox" /> Show tracking details</label>
           <label class="check" for="skeleton"><input id="skeleton" data-setting="skeleton" type="checkbox" /> Show hand outline</label>
         </fieldset>
 

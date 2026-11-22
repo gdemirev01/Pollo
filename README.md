@@ -19,6 +19,20 @@ Press **Start**, allow the camera, and hold your hands up so they're over the on
 2. Press **Move keys** (the arrows button) and drag the keyboard to where your hands are. Drag an edge or corner to resize it. Press **Done**.
 3. Adjust in **Settings**: lowest note, number of keys (5–36 white keys), note names, key opacity, pressed-key colour, camera (front, back or a specific device), mirror, and upside down for a camera mounted flipped.
 
+### Using the back camera from above (Table mode)
+
+Mount the phone over the table with the back camera pointing down (a phone stand, gooseneck or shelf), open the app and pick **Table** in Settings: it switches to the back camera and turns mirroring off. Use **Upside down** if the picture is rotated, then **Move keys** to place the keyboard where your hands rest.
+
+### Watching what the camera registers
+
+**Show tracking details** (on by default) draws a panel with a meter per finger for each hand in view:
+
+- the bar is the finger's current signal (Table: how far it's lifted; Tap: how far it's pushed down),
+- the solid line is where it arms/presses and the dotted line where it lands/releases,
+- grey = resting, amber = lifted and ready to strike, your accent colour = playing; the notes being held are listed beside it.
+
+A lifted fingertip also gets an amber ring on the video. If no hand is found for a moment, a message in the middle of the picture says so. Use **Tap sensitivity** to move the thresholds.
+
 Settings and the keyboard position are saved in the browser. You can also play by touching or clicking the keys on screen. **Full screen** and keep-screen-awake help when it's propped up on a phone.
 
 ### Online (GitHub Pages)
@@ -31,6 +45,7 @@ Settings and the keyboard position are saved in the browser. You can also play b
 | --- | --- |
 | **Tap** (default) | Hover your hands over the keys, then push **one finger down below the others**, like striking a key. Lift it back to release. The whole hand moving doesn't play anything; only a finger dropping relative to its neighbours. Thumbs are off by default (enable in settings). |
 | **Zone** | Any fingertip that enters a key plays it. Slide along the keys for a glissando. |
+| **Table** | Camera **above, looking down** (e.g. a phone's back camera on a stand). Rest your hands on the table, lift a finger and tap it back down: the note plays when it lands, on the key under that fingertip. Lifting the finger again lets go of the note. |
 
 - **Velocity**: strike faster for a louder note.
 - **Sustain pedal**: <kbd>Space</kbd> or the checkbox.

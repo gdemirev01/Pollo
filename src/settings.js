@@ -14,6 +14,7 @@ export const DEFAULTS = Object.freeze({
   volume: 0.7,
   reverb: 0.22,
   skeleton: true,
+  tracking: true,
   labels: 'c',
   opacity: 0.55,
   accent: '#facc15',

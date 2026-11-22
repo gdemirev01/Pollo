@@ -83,9 +83,15 @@ function apply(key) {
     case 'mode':
     case 'useThumb':
     case 'sensitivity': {
-      const press = 0.5 - settings.sensitivity * 0.035;
+      const v = settings.sensitivity; // 1..10, higher = more sensitive
+      const press = 0.5 - v * 0.035;
+      const lift = 0.3 - v * 0.022;
       handle(detector.reset());
-      detector.setOptions({ mode: settings.mode, useThumb: settings.useThumb, pressThreshold: press, releaseThreshold: press * 0.55 });
+      detector.setOptions({
+        mode: settings.mode, useThumb: settings.useThumb,
+        pressThreshold: press, releaseThreshold: press * 0.55,
+        liftThreshold: lift, landThreshold: lift * 0.4,
+      });
       updateHint();
       break;
     }
@@ -111,6 +117,12 @@ for (const el of document.querySelectorAll('[data-setting]')) {
     settings[key] = readControl(el);
     // Front cameras are usually mirrored, back cameras not.
     if (key === 'camera' && settings.camera.startsWith('facing:')) settings.mirror = settings.camera === 'facing:user';
+    // Table mode is for a camera above the hands: use the back camera, unmirrored.
+    if (key === 'mode' && settings.mode === 'surface' && settings.camera === 'facing:user') {
+      settings.camera = 'facing:environment';
+      settings.mirror = false;
+      apply('camera');
+    }
     save();
     writeControls();
     apply(key);
@@ -118,9 +130,11 @@ for (const el of document.querySelectorAll('[data-setting]')) {
 }
 
 function updateHint() {
-  $('#hint').textContent = settings.mode === 'tap'
-    ? 'Tap: hold your hands over the keys and push one finger down below the others to play the key under it.'
-    : 'Touch: any fingertip that moves into a key plays it. Slide across keys to play each in turn.';
+  $('#hint').textContent = {
+    tap: 'Tap: hold your hands over the keys and push one finger down below the others to play the key under it.',
+    zone: 'Touch: any fingertip that moves into a key plays it. Slide across keys to play each in turn.',
+    surface: 'Table: camera above, looking down. Rest your hands on the table, lift a finger and tap it back down. The note plays when it lands, on the key under that fingertip.',
+  }[settings.mode];
 }
 
 $('#sustain').addEventListener('input', (e) => synth?.setSustain(e.target.checked));
@@ -259,7 +273,7 @@ function toView(p) {
   let x = settings.mirror ? 1 - p.x : p.x;
   let y = p.y;
   if (settings.flip) { x = 1 - x; y = 1 - y; }
-  return { x, y };
+  return { x, y, z: p.z };
 }
 
 // ---------- touch / mouse ----------
@@ -444,16 +458,112 @@ function draw(now) {
       const st = detector.smoothed(id);
       const p = st ? { x: st.sx, y: st.sy } : lm[tip];
       const isOn = active.has(id);
-      const disabled = settings.mode === 'tap' && f === 0 && !settings.useThumb;
+      const disabled = st?.state === 'off';
       g.beginPath();
       g.arc(p.x * W, p.y * H, (isOn ? 12 : 7) * dpr, 0, Math.PI * 2);
       g.fillStyle = disabled ? 'rgba(150,150,150,0.5)' : FINGER_COLORS[f];
       g.fill();
       if (isOn) { g.strokeStyle = '#fff'; g.lineWidth = 3 * dpr; g.stroke(); }
+      if (st?.state === 'armed') { // lifted, ready to strike
+        g.beginPath();
+        g.arc(p.x * W, p.y * H, 15 * dpr, 0, Math.PI * 2);
+        g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5 * dpr; g.stroke();
+      }
     });
   }
 
+  if (settings.tracking && tracker) drawTracking(now, W, H, dpr);
+
   $('#fps').textContent = tracker ? `${hands.length} hand${hands.length === 1 ? '' : 's'} · ${fps.toFixed(0)} fps` : '';
+}
+
+// ---------- tracking details: what the camera registers, finger by finger ----------
+const STATE_COLORS = { idle: 'rgba(235,237,243,0.55)', armed: '#fbbf24', off: 'rgba(150,150,150,0.3)' };
+const SHORT = ['T', 'I', 'M', 'R', 'P'];
+let lastSeen = 0;
+
+function drawTracking(now, W, H, dpr) {
+  if (hands.length) lastSeen = now;
+  const font = (px, weight = 400) => `${weight} ${px * dpr}px system-ui, sans-serif`;
+
+  // Nothing seen for a moment: say so in the middle of the picture.
+  if (!hands.length && now - lastSeen > 1200) {
+    const tip = settings.mode === 'surface'
+      ? 'Point the camera down at the table. Keep your whole hand in the picture, in good light.'
+      : 'Hold your hands up in front of the camera, fully in the picture, in good light.';
+    g.font = font(13);
+    const tw = Math.min(W - 40 * dpr, Math.max(g.measureText(tip).width + 32 * dpr, 220 * dpr));
+    const lines = wrapText(tip, tw - 32 * dpr);
+    const bh = (44 + lines.length * 18) * dpr;
+    const bx = (W - tw) / 2, by = H * 0.3 - bh / 2;
+    g.fillStyle = 'rgba(15,17,23,0.82)';
+    roundRect(bx, by, tw, bh, 10 * dpr, true); g.fill();
+    g.fillStyle = '#ebedf3'; g.textAlign = 'center';
+    g.font = font(15, 600); g.fillText('No hands in view', W / 2, by + 26 * dpr);
+    g.font = font(13); g.fillStyle = '#9aa1b4';
+    lines.forEach((l, i) => g.fillText(l, W / 2, by + (46 + i * 18) * dpr));
+    return;
+  }
+  if (!hands.length) return;
+
+  // Meter panel: one row per hand (named by where it is on screen), a bar per finger.
+  const th = detector.thresholds();
+  const scaleMax = settings.mode === 'zone' ? 1 : th.on * 2;
+  const rows = [...hands].sort((a, b) => a.landmarks[0].x - b.landmarks[0].x);
+  const barW = 14 * dpr, gap = 6 * dpr, barH = 40 * dpr, pad = 10 * dpr;
+  const panelW = pad * 2 + 5 * barW + 4 * gap + 58 * dpr;
+  const rowH = barH + 30 * dpr;
+  const panelH = pad + rows.length * rowH;
+  const px = 10 * dpr, py = 10 * dpr;
+  g.fillStyle = 'rgba(15,17,23,0.78)';
+  roundRect(px, py, panelW, panelH, 10 * dpr, true); g.fill();
+
+  rows.forEach((hand, r) => {
+    const name = rows.length === 1 ? 'Hand' : r === 0 ? 'Left hand' : 'Right hand';
+    const ry = py + pad + r * rowH;
+    g.textAlign = 'left'; g.font = font(12, 600); g.fillStyle = '#ebedf3';
+    g.fillText(name, px + pad, ry + 10 * dpr);
+    const bx0 = px + pad;
+    const by0 = ry + 16 * dpr;
+    for (let f = 0; f < 5; f++) {
+      const st = detector.smoothed(`${hand.id}:${f}`);
+      const x = bx0 + f * (barW + gap);
+      g.fillStyle = 'rgba(255,255,255,0.08)';
+      g.fillRect(x, by0, barW, barH);
+      if (st) {
+        const v = Math.max(0, Math.min(1, st.signal / scaleMax));
+        g.fillStyle = st.state === 'pressed' ? settings.accent : STATE_COLORS[st.state];
+        g.fillRect(x, by0 + barH * (1 - v), barW, barH * v);
+      }
+      // threshold lines: solid = arm/press, dashed = land/release
+      if (settings.mode !== 'zone') {
+        const yOn = by0 + barH * (1 - th.on / scaleMax), yOff = by0 + barH * (1 - th.off / scaleMax);
+        g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = 1 * dpr;
+        g.beginPath(); g.moveTo(x - 1, yOn); g.lineTo(x + barW + 1, yOn); g.stroke();
+        g.setLineDash([2 * dpr, 2 * dpr]);
+        g.beginPath(); g.moveTo(x - 1, yOff); g.lineTo(x + barW + 1, yOff); g.stroke();
+        g.setLineDash([]);
+      }
+      g.textAlign = 'center'; g.font = font(10); g.fillStyle = '#9aa1b4';
+      g.fillText(SHORT[f], x + barW / 2, by0 + barH + 11 * dpr);
+    }
+    // the note(s) this hand is holding
+    const held = [];
+    for (let f = 0; f < 5; f++) { const k = active.get(`${hand.id}:${f}`); if (k) held.push(k.name); }
+    g.textAlign = 'left'; g.font = font(12, 600); g.fillStyle = settings.accent;
+    g.fillText(held.join(' '), bx0 + 5 * (barW + gap) + 4 * dpr, by0 + barH / 2 + 4 * dpr);
+  });
+}
+
+function wrapText(text, maxW) {
+  const words = text.split(' '), lines = [];
+  let line = '';
+  for (const w of words) {
+    const t = line ? `${line} ${w}` : w;
+    if (g.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t;
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 function drawEditFrame(W, H, dpr) {
@@ -479,7 +589,8 @@ function drawEditFrame(W, H, dpr) {
   g.restore();
 }
 
-function roundRect(x, y, w, h, r) {
+function roundRect(x, y, w, h, r, all = false) {
+  if (all) { g.beginPath(); g.roundRect ? g.roundRect(x, y, w, h, r) : g.rect(x, y, w, h); return; }
   g.beginPath();
   g.moveTo(x, y);
   g.lineTo(x + w, y);

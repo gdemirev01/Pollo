@@ -87,7 +87,7 @@ legend { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; col
 .panel input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 .panel input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .panel input[type=color] { width: 44px; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: none; padding: 2px; }
-select { min-height: 40px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; }
+select { width: 100%; min-width: 0; max-width: 100%; min-height: 40px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; }
 .small { font-size: 12px; color: var(--muted); margin: 0; }
 kbd { background: var(--raised); border-radius: 4px; padding: 0 5px; font-size: 11px; margin: 0 1px; }
 
